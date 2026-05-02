@@ -480,7 +480,7 @@ tr:hover td {
 }
 
 .order-queue-tab {
-  min-width: 120px;
+  min-width: 100px;
   padding: 8px 16px;
   border-radius: 12px;
   border: 1px solid #41495a;
@@ -953,6 +953,34 @@ tr:hover td {
 .data-table td.td-actions {
   white-space: normal;
   overflow: visible;
+}
+
+.data-table td.td-actions-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.row.row-space-between {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.customer-position-modal-sub {
+  margin: 0 0 12px;
+  color: #b8bdc9;
+  font-size: 14px;
+}
+
+.customer-position-modal .customer-position-modal-scroll {
+  max-height: min(62vh, 520px);
+  overflow: auto;
+}
+
+.customer-position-modal-table {
+  width: 100%;
+  min-width: 720px;
 }
 
 .col-market { width: 56px; }

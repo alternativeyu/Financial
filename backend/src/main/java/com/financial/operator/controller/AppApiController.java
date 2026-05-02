@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -343,9 +344,12 @@ public class AppApiController {
         for (Map<String, Object> row : rows) {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("fundAccountNo", asString(row.get("fund_account_no")));
-            item.put("currentBalance", asDecimal(row.get("current_balance")));
-            item.put("availableBalance", asDecimal(row.get("available_balance")));
-            item.put("frozenBalance", asDecimal(row.get("frozen_balance")));
+            BigDecimal av = asDecimal(row.get("available_balance"));
+            BigDecimal fr = asDecimal(row.get("frozen_balance"));
+            // 与总资产口径一致：对外「当前余额」= 可用+冻结，避免 current_balance 字段滞后导致与可用/冻结展示矛盾
+            item.put("currentBalance", fundCashTotal(av, fr));
+            item.put("availableBalance", av);
+            item.put("frozenBalance", fr);
             item.put("status", asString(row.get("status")));
             item.put("openedAt", row.get("opened_at"));
             list.add(item);
@@ -586,7 +590,8 @@ public class AppApiController {
     }
 
     /**
-     * App 资产总览：现金以资金户 current_balance 合计，证券以持仓市值合计；可用资金为 available_balance 合计（不含冻结）。
+     * App 资产总览：现金以资金户「可用+冻结」合计（与 {@link #fundCashTotal} 一致），证券以持仓市值合计；
+     * {@code availableCash} 为各户 available_balance 之和（不含冻结，仅表示可下单现金）。
      */
     @GetMapping("/assets/overview")
     public ApiResponse<Map<String, Object>> assetOverview(@RequestParam Long userId) {
@@ -615,8 +620,8 @@ public class AppApiController {
                 BigDecimal.class,
                 customerId
         );
-        BigDecimal sumCurrent = jdbcTemplate.queryForObject(
-                "SELECT COALESCE(SUM(current_balance),0) FROM acct_fund_account WHERE customer_id = ?",
+        BigDecimal sumCashTotal = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(SUM(available_balance + frozen_balance),0) FROM acct_fund_account WHERE customer_id = ?",
                 BigDecimal.class,
                 customerId
         );
@@ -628,13 +633,13 @@ public class AppApiController {
         if (sumAvail == null) {
             sumAvail = BigDecimal.ZERO;
         }
-        if (sumCurrent == null) {
-            sumCurrent = BigDecimal.ZERO;
+        if (sumCashTotal == null) {
+            sumCashTotal = BigDecimal.ZERO;
         }
         if (sumMv == null) {
             sumMv = BigDecimal.ZERO;
         }
-        BigDecimal totalAsset = sumCurrent.add(sumMv);
+        BigDecimal totalAsset = sumCashTotal.add(sumMv);
         BigDecimal profitLoss = jdbcTemplate.queryForObject(
                 """
                 SELECT COALESCE(SUM(
@@ -657,6 +662,9 @@ public class AppApiController {
         return ApiResponse.ok(data);
     }
 
+    /**
+     * App 持仓明细列表（按证券）：数量、成本/最新/行情价、市值等；资产页「查看持仓」按钮对接此接口。
+     */
     @GetMapping("/assets/positions")
     public ApiResponse<List<Map<String, Object>>> assetPositions(@RequestParam Long userId) {
         if (userId == null) {
@@ -677,9 +685,15 @@ public class AppApiController {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 """
                 SELECT p.market_code, p.security_code_snapshot AS security_code, s.security_name,
-                       p.total_qty, p.available_qty, p.frozen_qty, p.cost_price, p.last_price, p.market_value, p.position_status
+                       p.total_qty, p.available_qty, p.frozen_qty, p.cost_price, p.last_price, p.market_value, p.position_status,
+                       q.current_price AS quote_price
                 FROM acct_position p
                 LEFT JOIN md_security s ON s.id = p.security_id
+                LEFT JOIN md_market_quote q
+                  ON q.security_id = p.security_id
+                 AND q.quote_time = (
+                     SELECT MAX(q2.quote_time) FROM md_market_quote q2 WHERE q2.security_id = p.security_id
+                 )
                 WHERE p.customer_id = ?
                 ORDER BY p.market_code ASC, p.security_code_snapshot ASC
                 """,
@@ -688,14 +702,17 @@ public class AppApiController {
         List<Map<String, Object>> list = new ArrayList<>();
         for (Map<String, Object> row : rows) {
             Map<String, Object> item = new LinkedHashMap<>();
-            item.put("marketCode", asString(row.get("market_code")));
+            String mc = asString(row.get("market_code"));
+            item.put("marketCode", mc);
+            item.put("market", "1".equals(mc) ? "SH" : "SZ");
             item.put("securityCode", asString(row.get("security_code")));
             item.put("securityName", row.get("security_name") == null ? "" : asString(row.get("security_name")));
             item.put("totalQty", toLong(row.get("total_qty")));
             item.put("availableQty", toLong(row.get("available_qty")));
             item.put("frozenQty", toLong(row.get("frozen_qty")));
-            item.put("costPrice", asDecimal(row.get("cost_price")).doubleValue());
+            item.put("costPrice", row.get("cost_price") == null ? null : asDecimal(row.get("cost_price")).doubleValue());
             item.put("lastPrice", row.get("last_price") == null ? null : asDecimal(row.get("last_price")).doubleValue());
+            item.put("quotePrice", row.get("quote_price") == null ? null : asDecimal(row.get("quote_price")).doubleValue());
             item.put("marketValue", row.get("market_value") == null ? null : asDecimal(row.get("market_value")).doubleValue());
             item.put("positionStatus", row.get("position_status") == null ? "" : asString(row.get("position_status")));
             list.add(item);
@@ -845,6 +862,13 @@ public class AppApiController {
         if (value == null) return null;
         if (value instanceof BigDecimal d) return d;
         return new BigDecimal(String.valueOf(value));
+    }
+
+    /** 资金户对外展示用现金总额（可用+冻结），与总资产中的现金部分口径一致 */
+    private static BigDecimal fundCashTotal(BigDecimal availableBalance, BigDecimal frozenBalance) {
+        BigDecimal a = availableBalance == null ? BigDecimal.ZERO : availableBalance;
+        BigDecimal f = frozenBalance == null ? BigDecimal.ZERO : frozenBalance;
+        return a.add(f).setScale(4, RoundingMode.HALF_UP);
     }
 
     record AppUserRow(Long id, String username, String mobile, String passwordHash, String status) {

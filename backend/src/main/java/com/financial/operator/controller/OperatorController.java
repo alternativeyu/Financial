@@ -442,9 +442,15 @@ public class OperatorController {
         List<Map<String, Object>> positions = jdbcTemplate.queryForList(
                 """
                 SELECT p.id, p.market_code, p.security_code_snapshot, s.security_name,
-                       p.total_qty, p.available_qty, p.frozen_qty, p.cost_price, p.last_price, p.market_value, p.position_status
+                       p.total_qty, p.available_qty, p.frozen_qty, p.cost_price, p.last_price, p.market_value, p.position_status,
+                       q.current_price AS quote_price
                 FROM acct_position p
                 LEFT JOIN md_security s ON s.id = p.security_id
+                LEFT JOIN md_market_quote q
+                  ON q.security_id = p.security_id
+                 AND q.quote_time = (
+                     SELECT MAX(q2.quote_time) FROM md_market_quote q2 WHERE q2.security_id = p.security_id
+                 )
                 WHERE p.customer_id = ?
                 ORDER BY p.market_code ASC, p.security_code_snapshot ASC
                 """,

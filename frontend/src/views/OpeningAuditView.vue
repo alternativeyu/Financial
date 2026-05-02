@@ -298,7 +298,10 @@
             <td>
               <span class="cell-ellipsis" :title="textOrDash(item.openDate)">{{ item.openDate }}</span>
             </td>
-            <td class="td-actions"><button @click="openCustomerDetail(item.id)">查看详情</button></td>
+            <td class="td-actions td-actions-split">
+              <button type="button" @click="openCustomerDetail(item.id)">查看详情</button>
+              <button type="button" class="secondary" @click="openCustomerPositionModal(item.id)">持仓详情</button>
+            </td>
           </tr>
           <tr v-if="!customers.length">
             <td colspan="8" class="empty-row">暂无记录</td>
@@ -308,8 +311,9 @@
     </div>
 
     <div v-if="activeNav === 'customer-center' && customerViewMode === 'detail' && selectedCustomerId && customerAssets.customer" class="card">
-      <div class="row">
-        <button class="secondary" @click="backToCustomerList">返回客户列表</button>
+      <div class="row row-space-between">
+        <button class="secondary" type="button" @click="backToCustomerList">返回客户列表</button>
+        <button type="button" @click="openCustomerPositionModal(selectedCustomerId)">持仓详情（弹窗）</button>
       </div>
       <h3 class="title">资产持仓</h3>
       <div class="metrics-grid opening-result-grid">
@@ -332,15 +336,17 @@
       </div>
       <table class="data-table customer-position-table">
         <colgroup>
+          <col style="width: 6%" />
+          <col style="width: 9%" />
+          <col style="width: 14%" />
+          <col style="width: 7%" />
+          <col style="width: 7%" />
           <col style="width: 7%" />
           <col style="width: 10%" />
-          <col style="width: 18%" />
-          <col style="width: 9%" />
-          <col style="width: 9%" />
-          <col style="width: 9%" />
-          <col style="width: 9%" />
-          <col style="width: 9%" />
-          <col style="width: 20%" />
+          <col style="width: 10%" />
+          <col style="width: 10%" />
+          <col style="width: 10%" />
+          <col style="width: 10%" />
         </colgroup>
         <thead>
           <tr>
@@ -352,7 +358,9 @@
             <th>冻结</th>
             <th>成本价</th>
             <th>最新价</th>
+            <th>行情价</th>
             <th>市值</th>
+            <th>状态</th>
           </tr>
         </thead>
         <tbody>
@@ -367,12 +375,16 @@
             <td>{{ p.total_qty }}</td>
             <td>{{ p.available_qty }}</td>
             <td>{{ p.frozen_qty }}</td>
-            <td>{{ p.cost_price }}</td>
-            <td>{{ p.last_price }}</td>
-            <td>{{ p.market_value }}</td>
+            <td>{{ p.cost_price != null && p.cost_price !== '' ? formatMoney(p.cost_price) : '-' }}</td>
+            <td>{{ p.last_price != null && p.last_price !== '' ? formatMoney(p.last_price) : '-' }}</td>
+            <td>{{ p.quote_price != null && p.quote_price !== '' ? formatMoney(p.quote_price) : '-' }}</td>
+            <td>{{ p.market_value != null && p.market_value !== '' ? formatMoney(p.market_value) : '-' }}</td>
+            <td>
+              <span class="cell-ellipsis" :title="textOrDash(p.position_status)">{{ p.position_status || "-" }}</span>
+            </td>
           </tr>
           <tr v-if="!(customerAssets.positions || []).length">
-            <td colspan="9" class="empty-row">暂无记录</td>
+            <td colspan="11" class="empty-row">暂无记录</td>
           </tr>
         </tbody>
       </table>
@@ -591,11 +603,15 @@
             @change="loadOrderList"
           >
             <option value="">全部（进行中内）</option>
+            <option value="INIT">待报</option>
             <option value="REPORTED">已报</option>
             <option value="PART_FILLED">部成</option>
-            <option value="FILLED">全成</option>
             <option value="REJECTED">废单</option>
           </select>
+          <button type="button" class="order-refresh-btn" @click="loadOrderList">刷新委托</button>
+        </div>
+        <div v-show="orderQueueTab === 'completed'" class="order-toolbar-cluster order-toolbar-cluster-end">
+          <span class="order-toolbar-hint">含全成及部撤中产生成交的记录（与「已撤单」可能重叠）</span>
           <button type="button" class="order-refresh-btn" @click="loadOrderList">刷新委托</button>
         </div>
         <div v-show="orderQueueTab === 'canceled'" class="order-toolbar-cluster order-toolbar-cluster-end">
@@ -618,6 +634,16 @@
           type="button"
           class="order-queue-tab"
           role="tab"
+          :aria-selected="orderQueueTab === 'completed'"
+          :class="{ active: orderQueueTab === 'completed' }"
+          @click="setOrderQueueTab('completed')"
+        >
+          已完成
+        </button>
+        <button
+          type="button"
+          class="order-queue-tab"
+          role="tab"
           :aria-selected="orderQueueTab === 'canceled'"
           :class="{ active: orderQueueTab === 'canceled' }"
           @click="setOrderQueueTab('canceled')"
@@ -631,7 +657,7 @@
       <div class="order-list-head">
         <h3 class="title order-list-title">
           {{ orderMode === "manual" ? "手动委托列表" : "App申请委托列表" }}
-          <span class="order-list-sub">{{ orderQueueTab === "canceled" ? "· 已撤单" : "· 进行中" }}</span>
+          <span class="order-list-sub">{{ orderListSubLabel }}</span>
         </h3>
         <span class="order-list-meta">共 {{ orderRows.length }} 笔</span>
       </div>
@@ -752,11 +778,7 @@
             </tr>
             <tr v-if="!orderRows.length">
               <td colspan="16" class="empty-row order-empty-hint">
-                {{
-                  orderQueueTab === "canceled"
-                    ? "暂无已撤单记录，可在「进行中」查看当前有效委托"
-                    : "暂无进行中委托，可切换「已撤单」或调整状态筛选后刷新"
-                }}
+                {{ orderEmptyHint }}
               </td>
             </tr>
           </tbody>
@@ -832,6 +854,71 @@
       </table>
     </div>
     <div v-if="activeNav === 'market-center' && message" class="card message">{{ message }}</div>
+
+    <div
+      v-if="customerPositionModalOpen"
+      class="result-modal-mask"
+      @click.self="closeCustomerPositionModal"
+    >
+      <div class="result-modal customer-position-modal">
+        <div class="result-modal-head">
+          <h3 class="title">客户持仓详情</h3>
+          <button type="button" class="secondary" @click="closeCustomerPositionModal">关闭</button>
+        </div>
+        <p class="customer-position-modal-sub">{{ customerPositionModalTitle }}</p>
+        <div class="customer-position-modal-scroll">
+          <table class="data-table customer-position-modal-table">
+            <thead>
+              <tr>
+                <th>市场</th>
+                <th>证券代码</th>
+                <th>证券名称</th>
+                <th>总持仓</th>
+                <th>可卖</th>
+                <th>冻结</th>
+                <th>成本价</th>
+                <th>最新价</th>
+                <th>行情价</th>
+                <th>市值</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in customerPositionModalRows" :key="p.id">
+                <td>{{ p.market_code === '1' ? '沪A' : '深A' }}</td>
+                <td>
+                  <span class="cell-ellipsis mono" :title="textOrDash(p.security_code_snapshot)">{{
+                    p.security_code_snapshot
+                  }}</span>
+                </td>
+                <td>
+                  <span class="cell-ellipsis" :title="textOrDash(p.security_name)">{{ p.security_name || '-' }}</span>
+                </td>
+                <td>{{ p.total_qty }}</td>
+                <td>{{ p.available_qty }}</td>
+                <td>{{ p.frozen_qty }}</td>
+                <td>{{ p.cost_price != null && p.cost_price !== '' ? formatMoney(p.cost_price) : '-' }}</td>
+                <td>{{ p.last_price != null && p.last_price !== '' ? formatMoney(p.last_price) : '-' }}</td>
+                <td>
+                  {{
+                    p.quote_price != null && p.quote_price !== ''
+                      ? formatMoney(p.quote_price)
+                      : '-'
+                  }}
+                </td>
+                <td>{{ p.market_value != null && p.market_value !== '' ? formatMoney(p.market_value) : '-' }}</td>
+                <td>
+                  <span class="cell-ellipsis" :title="textOrDash(p.position_status)">{{ p.position_status || '-' }}</span>
+                </td>
+              </tr>
+              <tr v-if="!customerPositionModalRows.length">
+                <td colspan="11" class="empty-row">暂无持仓</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
     </div>
   </div>
 </template>
@@ -874,7 +961,7 @@ const marketKeyword = ref("");
 const marketQuotes = ref([]);
 const orderSourceFilter = ref("APP");
 const orderStatusFilter = ref("");
-/** 进行中：非全撤/部撤；已撤单：CANCELED / PART_CANCELED */
+/** 进行中 | 已完成 | 已撤单 */
 const orderQueueTab = ref("active");
 const orderRows = ref([]);
 const orderMode = ref("app");
@@ -895,6 +982,9 @@ const customerViewMode = ref("list");
 const customerAssets = ref({ customer: null, fundAccounts: [], shareholderAccounts: [], positions: [] });
 const customerOrders = ref([]);
 const customerTrades = ref([]);
+const customerPositionModalOpen = ref(false);
+const customerPositionModalTitle = ref("");
+const customerPositionModalRows = ref([]);
 const navItems = [
   { key: "opening-audit", label: "开户审核" },
   { key: "customer-center", label: "客户管理" },
@@ -914,6 +1004,22 @@ const displayedApplications = computed(() => {
   if (activeListTab.value === "submitted") return submittedApplications.value;
   if (activeListTab.value === "pending") return pendingApplications.value;
   return reviewedApplications.value;
+});
+
+const orderListSubLabel = computed(() => {
+  if (orderQueueTab.value === "canceled") return "· 已撤单";
+  if (orderQueueTab.value === "completed") return "· 已完成";
+  return "· 进行中";
+});
+
+const orderEmptyHint = computed(() => {
+  if (orderQueueTab.value === "canceled") {
+    return "暂无已撤单记录，可在「进行中」查看当前有效委托";
+  }
+  if (orderQueueTab.value === "completed") {
+    return "暂无已完成委托，成交后会在本页展示；未成交的仍在「进行中」";
+  }
+  return "暂无进行中委托，可切换「已完成」「已撤单」或调整状态筛选后刷新";
 });
 
 onMounted(() => {
@@ -1024,6 +1130,8 @@ async function loadOrderList() {
     };
     if (orderQueueTab.value === "canceled") {
       params.orderStatusGroup = "CANCELED";
+    } else if (orderQueueTab.value === "completed") {
+      params.orderStatusGroup = "COMPLETED";
     } else {
       params.orderStatusGroup = "ACTIVE";
       if (orderStatusFilter.value) {
@@ -1043,7 +1151,7 @@ async function loadOrderList() {
 function setOrderQueueTab(tab) {
   if (orderQueueTab.value === tab) return;
   orderQueueTab.value = tab;
-  if (tab === "canceled") {
+  if (tab === "canceled" || tab === "completed") {
     orderStatusFilter.value = "";
   }
   loadOrderList();
@@ -1141,6 +1249,27 @@ async function selectCustomer(customerId) {
 async function openCustomerDetail(customerId) {
   customerViewMode.value = "detail";
   await selectCustomer(customerId);
+}
+
+async function openCustomerPositionModal(customerId) {
+  customerPositionModalOpen.value = true;
+  customerPositionModalRows.value = [];
+  customerPositionModalTitle.value = "加载中…";
+  try {
+    const data = await getCustomerAssets(customerId);
+    const c = data.customer;
+    const label = c?.customerName || c?.customerCode || String(customerId);
+    const code = c?.customerCode ? `（${c.customerCode}）` : "";
+    customerPositionModalTitle.value = `${label}${code}`;
+    customerPositionModalRows.value = data.positions || [];
+  } catch (e) {
+    customerPositionModalOpen.value = false;
+    message.value = e?.response?.data?.message || e.message || "加载持仓失败";
+  }
+}
+
+function closeCustomerPositionModal() {
+  customerPositionModalOpen.value = false;
 }
 
 function backToCustomerList() {

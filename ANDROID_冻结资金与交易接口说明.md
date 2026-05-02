@@ -23,7 +23,8 @@
 
 ### 1.3 与界面展示的关系
 
-- 资金账户接口会返回 **`availableBalance`（可用）**、**`frozenBalance`（冻结）**、以及 **`currentBalance`** 等，建议在「资金」页同时展示**可用 / 冻结**，避免用户误以为下单后钱「消失」。
+- 资金账户接口会返回 **`availableBalance`（可用）**、**`frozenBalance`（冻结）**、以及 **`currentBalance`（当前余额）** 等，建议在「资金」页同时展示**可用 / 冻结**。
+- **口径约定**：`currentBalance` 与 **`availableBalance + frozenBalance`** 表示同一笔资金的总账（总现金 = 可用 + 冻结）；下单时从可用划到冻结，**总额不变**；成交后总额随实际支出与费用减少。若曾使用旧版后端（下单/撤单未写回 `current_balance`），可能出现「可用与当前余额不一致」；请升级后端并执行仓库内 **`sql/patch_acct_fund_account_repair_current_balance.sql`** 一次性纠偏。
 - 委托列表每条可展示：委托价、数量、已成、剩余、状态；**是否可撤**以后端返回的 **`canCancel`** 为准。
 
 ---
@@ -43,8 +44,10 @@
 | 资金账户（含可用/冻结） | GET | `/trade/fund-accounts?userId=` | 展示下单前可用、冻结 |
 | 风控预校验 | POST | `/trade/risk/precheck` | 可选；校验后再下单 |
 | 下单 | POST | `/trade/orders` | **触发冻结**（买：冻资；卖：冻券） |
-| 委托列表 | GET | `/trade/orders?userId=` | 含 **`canCancel`**、成交量、状态等 |
+| 委托列表 | GET | `/trade/orders?userId=` | 含 **`orderListBuckets`**、**`canCancel`**；可选 **`orderListCategory`** 按 Tab 筛数据 |
 | 撤单 | POST | `/trade/orders/{orderNo}/cancel` | **释放剩余冻结**（未成交部分） |
+| 资产总览 | GET | `/assets/overview?userId=` | 总资产、可用现金、持仓市值、浮动盈亏等 |
+| 持仓明细 | GET | `/assets/positions?userId=` | 按证券的持仓条数、多类价格、市值（资产页「查看持仓」） |
 
 > **模拟成交**仅柜台操作员接口（`/api/operator/...`），App 端一般不调用；生产成交由撮合/回报系统对接。
 
@@ -83,13 +86,22 @@
 
 - `userId`（必填）
 - `fundAccountNo`（可选）
-- `orderStatus`（可选，如 `REPORTED`）
+- `orderStatus`（可选，精确匹配单笔状态，如 `REPORTED`）
+- **`orderListCategory`（可选）**：与「未完成 / 已完成 / 已撤单」三 Tab 对齐，由服务端筛数据：
+  - **`ONGOING`**：`INIT`、`REPORTED`、`PART_FILLED`（进行中）
+  - **`COMPLETED`**：**有成交**的终结态——`FILLED`（全成）以及 **`PART_CANCELED` 且 `filled_qty > 0`**（部成后撤剩余）
+  - **`CANCELED`**：**含撤单**的终结态——`CANCELED`（全撤）与 **`PART_CANCELED`**（部撤）
+  - 传 **`FILLED`** 时与 **`COMPLETED`** 同义（兼容旧参数名）
 - `page`、`pageSize`
+
+**说明：** 部撤 **`PART_CANCELED`** 既属于「有成交」又属于「有撤单」，因此会**同时**出现在 **`COMPLETED`** 与 **`CANCELED`** 两种筛选结果中；全成单只在 **`COMPLETED`**，全撤无成交单只在 **`CANCELED`**。
 
 列表项重点字段：
 
 - `orderNo`、`orderPrice` / `price`、`orderQty` / `quantity`、`filledQty`、`remainQty`、`orderStatus`
+- **`orderListBuckets`**（字符串数组）：该笔委托应出现在哪些 Tab。取值来自 `COMPLETED` / `CANCELED` / `ONGOING`（与查询参数同语义）。例如部撤且有成：`["COMPLETED","CANCELED"]`；全成：`["COMPLETED"]`；全撤：`["CANCELED"]`；进行中：`["ONGOING"]`。**本地分 Tab 时请按桶判断**（如 `buckets.contains("COMPLETED")`），不要仅用 `orderStatus == "FILLED"` 或 `== "CANCELED"` 单键判断。
 - **`canCancel`**：`true` 时可展示撤单入口（仍可能因并发被服务端拒绝，以接口返回为准）。
+- 已终结委托（全成、全撤、部撤）的 **`remainQty` 为 0**（不再展示「剩余可撤数量」语义上的未平量）。
 
 ### 4.4 撤单 `POST /trade/orders/{orderNo}/cancel`
 
@@ -106,6 +118,22 @@
 - 撤单成功后，服务端会**释放该笔委托剩余冻结**（资金或股份），资金账户 / 持仓刷新后即可看到可用、冻结变化。
 - **`requestSeqNo`** 同样须唯一，建议命名空间与下单区分（如 `APP_CANCEL_` 前缀）。
 
+### 4.5 资产总览 `GET /assets/overview?userId={id}`
+
+- 返回 `data`：`availableCash`（各资金户可用之和）、`totalAsset`（现金「可用+冻结」合计 + 持仓市值）、`marketValue`、`profitLoss` 等。
+- 与 **`/trade/fund-accounts`** 配合展示资金卡片；刷新资产页时建议两个接口一起拉。
+
+### 4.6 持仓明细 `GET /assets/positions?userId={id}`
+
+- **用途**：资产页在「持仓汇总」下方增加 **「查看持仓明细」** 按钮，点击后请求本接口，在弹窗或新页面展示列表。
+- **成功时 `data` 为数组**，每条示例字段：
+  - **`market` / `marketCode`**：如 `SH` / `1`（沪）、`SZ` / `0`（深）
+  - **`securityCode`、`securityName`**：证券代码与名称
+  - **`totalQty`**：总持仓股数；**`availableQty`**：可卖；**`frozenQty`**：委托冻结
+  - **`costPrice`**：成本价（加权）；**`lastPrice`**：持仓上记录的最近价/成交价口径
+  - **`quotePrice`**：行情表最新价（无行情时为 `null`）
+  - **`marketValue`**：持仓市值；**`positionStatus`**：状态
+
 ---
 
 ## 5. Android 端设计建议
@@ -118,18 +146,20 @@
 
 ### 5.2 委托列表页（推荐替代「手输 orderNo 撤单」）
 
-1. 使用 **`GET /trade/orders`** 拉列表，按状态筛选 Tab（进行中 / 已撤单 等可由客户端本地分桶 + 后端状态字段组合实现）。
+1. **推荐**：三个 Tab 分别请求 **`GET /trade/orders?userId=...&orderListCategory=ONGOING|COMPLETED|CANCELED`**（`FILLED` 与 `COMPLETED` 等价）；或一次拉全量后按每条 **`orderListBuckets`** 分桶：未完成只显示含 `ONGOING` 的；已完成显示含 **`COMPLETED`** 的；已撤单显示含 **`CANCELED`** 的（部撤会同时出现在后两个 Tab）。
 2. 仅当 **`canCancel === true`** 时显示「撤单」按钮；点击后确认弹窗，再调 **`POST .../cancel`**。
 3. 撤单成功后 **重新拉列表 + 刷新资金账户**，保证冻结数字与服务器一致。
 
 ### 5.3 资金页 / 资产总览
 
-1. 定期或从下单/撤单返回后刷新 **`/trade/fund-accounts`**。
+1. 定期或从下单/撤单返回后刷新 **`/trade/fund-accounts`** 与 **`/assets/overview`**，保证汇总与卡片一致。
 2. 用文案说明：**冻结资金为委托占用，撤单或成交后按规则释放**（避免客诉）。
+3. **持仓明细按钮**：在占位文案处增加按钮「查看持仓明细」→ 调 **`GET /assets/positions?userId=`**，用 `RecyclerView` / `LazyColumn` 展示列表；主行展示 **名称 + 代码 + 总股数**；副行展示 **成本价、行情价（`quotePrice`）、市值**；无 `quotePrice` 时可仅用 `lastPrice`。
 
 ### 5.4 数据模型（Gson）
 
 - 列表项价格字段请映射 **`orderPrice`** 或 **`price`**（后端两者等价）；数量 **`orderQty`** / **`quantity`**。
+- **`orderListBuckets`**：JSON 数组，Gson 可映射为 `List<String>` 或 `String[]`，用于 Tab 展示逻辑。
 - `BigDecimal` 建议用 `String` 接 JSON 再转，避免精度问题。
 
 ### 5.5 错误与幂等

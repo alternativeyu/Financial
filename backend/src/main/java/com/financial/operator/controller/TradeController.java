@@ -57,15 +57,16 @@ public class TradeController {
             String sourceFilter = isBlank(sourceType) ? null : sourceType.trim().toUpperCase();
             String statusFilter = isBlank(orderStatus) ? null : orderStatus.trim().toUpperCase();
             String group = isBlank(orderStatusGroup) ? null : orderStatusGroup.trim().toUpperCase();
-            if (group != null && !"ACTIVE".equals(group) && !"CANCELED".equals(group)) {
-                throw new IllegalArgumentException("orderStatusGroup 仅支持 ACTIVE 或 CANCELED");
+            if (group != null && !"ACTIVE".equals(group) && !"CANCELED".equals(group) && !"COMPLETED".equals(group)) {
+                throw new IllegalArgumentException("orderStatusGroup 仅支持 ACTIVE、COMPLETED 或 CANCELED");
             }
 
             String where = """
                     WHERE (? IS NULL OR o.source_type = ?)
                       AND (? IS NULL OR o.order_status = ?)
                       AND (? IS NULL OR (
-                           (? = 'ACTIVE' AND o.order_status NOT IN ('CANCELED','PART_CANCELED'))
+                           (? = 'ACTIVE' AND o.order_status IN ('INIT','REPORTED','PART_FILLED'))
+                        OR (? = 'COMPLETED' AND (o.order_status = 'FILLED' OR (o.order_status = 'PART_CANCELED' AND o.filled_qty > 0)))
                         OR (? = 'CANCELED' AND o.order_status IN ('CANCELED','PART_CANCELED'))
                       ))
                     """;
@@ -73,7 +74,7 @@ public class TradeController {
             Integer total = jdbcTemplate.queryForObject(
                     "SELECT COUNT(1) FROM trd_order o " + where,
                     Integer.class,
-                    sourceFilter, sourceFilter, statusFilter, statusFilter, group, group, group
+                    sourceFilter, sourceFilter, statusFilter, statusFilter, group, group, group, group
             );
 
             List<Map<String, Object>> rows = jdbcTemplate.queryForList(
@@ -105,7 +106,7 @@ public class TradeController {
                     ORDER BY o.created_at DESC
                     LIMIT ? OFFSET ?
                     """,
-                    sourceFilter, sourceFilter, statusFilter, statusFilter, group, group, group, size, offset
+                    sourceFilter, sourceFilter, statusFilter, statusFilter, group, group, group, group, size, offset
             );
 
             List<Map<String, Object>> list = rows.stream().map(this::toOrderListItem).toList();
@@ -128,6 +129,14 @@ public class TradeController {
             @RequestParam @NotNull Long userId,
             @RequestParam(required = false) String fundAccountNo,
             @RequestParam(required = false) String orderStatus,
+            /**
+             * 与「未完成 / 已完成 / 已撤单」三 Tab 对齐：
+             * {@code ONGOING} 进行中；{@code COMPLETED} 有成交且可展示在「已完成」（全成 + 部撤中有成交量）；
+             * {@code CANCELED} 含撤单（全撤 + 部撤）。部撤 {@code PART_CANCELED} 同时属于 COMPLETED 与 CANCELED。
+             * 传 {@code FILLED} 时与 {@code COMPLETED} 同义（兼容旧参数）。
+             * 不传则返回全部；分桶以每条 {@code orderListBuckets} 为准。
+             */
+            @RequestParam(required = false) String orderListCategory,
             @RequestParam(defaultValue = "1") Integer page,
             @RequestParam(defaultValue = "20") Integer pageSize
     ) {
@@ -142,12 +151,24 @@ public class TradeController {
             int offset = (pageNo - 1) * size;
             String fundFilter = isBlank(fundAccountNo) ? null : fundAccountNo.trim();
             String statusFilter = isBlank(orderStatus) ? null : orderStatus.trim().toUpperCase();
+            String listCat = isBlank(orderListCategory) ? null : orderListCategory.trim().toUpperCase();
+            if ("FILLED".equals(listCat)) {
+                listCat = "COMPLETED";
+            }
+            if (listCat != null && !"ONGOING".equals(listCat) && !"COMPLETED".equals(listCat) && !"CANCELED".equals(listCat)) {
+                throw new IllegalArgumentException("orderListCategory 仅支持 ONGOING、COMPLETED（或别名 FILLED）、CANCELED");
+            }
 
             String where = """
                     WHERE o.customer_id = ?
                       AND o.source_type = 'APP'
                       AND (? IS NULL OR fa.fund_account_no = ?)
                       AND (? IS NULL OR o.order_status = ?)
+                      AND (? IS NULL OR (
+                           (? = 'ONGOING' AND o.order_status IN ('INIT','REPORTED','PART_FILLED'))
+                        OR (? = 'COMPLETED' AND (o.order_status = 'FILLED' OR (o.order_status = 'PART_CANCELED' AND o.filled_qty > 0)))
+                        OR (? = 'CANCELED' AND o.order_status IN ('CANCELED','PART_CANCELED'))
+                      ))
                     """;
 
             Integer total = jdbcTemplate.queryForObject(
@@ -155,7 +176,8 @@ public class TradeController {
                             + "LEFT JOIN acct_fund_account fa ON fa.id = o.fund_account_id "
                             + where,
                     Integer.class,
-                    customerId, fundFilter, fundFilter, statusFilter, statusFilter
+                    customerId, fundFilter, fundFilter, statusFilter, statusFilter,
+                    listCat, listCat, listCat, listCat
             );
 
             List<Map<String, Object>> rows = jdbcTemplate.queryForList(
@@ -189,7 +211,8 @@ public class TradeController {
                     ORDER BY o.created_at DESC
                     LIMIT ? OFFSET ?
                     """,
-                    customerId, fundFilter, fundFilter, statusFilter, statusFilter, size, offset
+                    customerId, fundFilter, fundFilter, statusFilter, statusFilter,
+                    listCat, listCat, listCat, listCat, size, offset
             );
 
             List<Map<String, Object>> list = rows.stream().map(this::toOrderListItem).toList();
@@ -489,11 +512,12 @@ public class TradeController {
                     UPDATE acct_fund_account
                     SET available_balance = available_balance - ?,
                         frozen_balance = frozen_balance + ?,
+                        current_balance = (available_balance - ?) + (frozen_balance + ?),
                         version = version + 1,
                         updated_at = NOW()
                     WHERE id = ? AND available_balance >= ?
                     """,
-                    orderAmount, orderAmount, fundAccountId, orderAmount
+                    orderAmount, orderAmount, orderAmount, orderAmount, fundAccountId, orderAmount
             );
             if (updated == 0) {
                 throw new IllegalArgumentException("可用资金不足");
@@ -695,11 +719,13 @@ public class TradeController {
                         UPDATE acct_fund_account
                         SET available_balance = available_balance + ?,
                             frozen_balance = frozen_balance - ?,
+                            current_balance = (available_balance + ?) + (frozen_balance - ?),
                             version = version + 1,
                             updated_at = NOW()
                         WHERE id = ? AND frozen_balance >= ?
                         """,
-                        releasedCash, releasedCash, toLong(order.get("fund_account_id")), releasedCash
+                        releasedCash, releasedCash, releasedCash, releasedCash,
+                        toLong(order.get("fund_account_id")), releasedCash
                 );
             }
             jdbcTemplate.update(
@@ -932,6 +958,16 @@ public class TradeController {
         BigDecimal orderPrice = asDecimal(order.get("order_price"));
         if (orderPrice == null || orderPrice.compareTo(BigDecimal.ZERO) <= 0) {
             throw new IllegalArgumentException("委托价格异常");
+        }
+        // 限价委托与成交价关系（模拟成交 / 手工回报共用）
+        if ("B".equalsIgnoreCase(direction)) {
+            if (fillPrice.compareTo(orderPrice) > 0) {
+                throw new IllegalArgumentException("买入限价委托：成交价不能高于委托价");
+            }
+        } else if ("S".equalsIgnoreCase(direction)) {
+            if (fillPrice.compareTo(orderPrice) < 0) {
+                throw new IllegalArgumentException("卖出限价委托：成交价不能低于委托价");
+            }
         }
 
         Map<String, Object> sec = queryOne(
@@ -1251,6 +1287,26 @@ public class TradeController {
         return v == null ? BigDecimal.ZERO : v;
     }
 
+    /**
+     * App 三 Tab 分桶：部撤 {@code PART_CANCELED} 同时含「有成交」与「有撤单」，返回 {@code COMPLETED} 与 {@code CANCELED} 两个桶。
+     */
+    private static List<String> computeOrderListBuckets(String orderStatus, long filledQty) {
+        if (orderStatus == null) {
+            return List.of("ONGOING");
+        }
+        return switch (orderStatus) {
+            case "FILLED" -> List.of("COMPLETED");
+            case "CANCELED" -> List.of("CANCELED");
+            case "PART_CANCELED" -> {
+                if (filledQty > 0L) {
+                    yield List.of("COMPLETED", "CANCELED");
+                }
+                yield List.of("CANCELED");
+            }
+            default -> List.of("ONGOING");
+        };
+    }
+
     private String buildOrderRequestPayload(String marketCode, String securityCode, String direction, BigDecimal price, Long quantity) {
         return "{\"marketCode\":\"" + marketCode + "\",\"securityCode\":\"" + securityCode + "\",\"tradeDirection\":\""
                 + direction + "\",\"price\":" + price + ",\"quantity\":" + quantity + "}";
@@ -1259,11 +1315,12 @@ public class TradeController {
     private Map<String, Object> toOrderListItem(Map<String, Object> row) {
         long orderQty = toLong(row.get("order_qty"));
         long filledQty = toLong(row.get("filled_qty"));
-        long remainQty = Math.max(0L, orderQty - filledQty);
         String status = asString(row.get("order_status"));
+        boolean terminal = "FILLED".equals(status) || "CANCELED".equals(status) || "PART_CANCELED".equals(status);
+        long remainQty = terminal ? 0L : Math.max(0L, orderQty - filledQty);
         String lastCancelStatus = asString(row.get("last_cancel_status"));
         boolean canceling = "INIT".equals(lastCancelStatus) || "SENT".equals(lastCancelStatus);
-        boolean canCancel = ("REPORTED".equals(status) || "PART_FILLED".equals(status)) && remainQty > 0 && !canceling;
+        boolean canCancel = ("REPORTED".equals(status) || "PART_FILLED".equals(status)) && !terminal && (orderQty - filledQty) > 0 && !canceling;
 
         String marketCode = asString(row.get("market_code"));
         String direction = asString(row.get("trade_direction"));
@@ -1288,6 +1345,7 @@ public class TradeController {
         item.put("filledQty", filledQty);
         item.put("remainQty", remainQty);
         item.put("orderStatus", status);
+        item.put("orderListBuckets", computeOrderListBuckets(status, filledQty));
         item.put("createdAt", row.get("created_at"));
         item.put("lastCancelStatus", lastCancelStatus);
         item.put("canCancel", canCancel);
