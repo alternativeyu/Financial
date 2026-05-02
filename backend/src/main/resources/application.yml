@@ -1,0 +1,11 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: operator-backend
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/financial_trading?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: lyb050527
+    driver-class-name: com.mysql.cj.jdbc.Driver
