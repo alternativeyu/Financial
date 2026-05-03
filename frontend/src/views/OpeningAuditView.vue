@@ -796,12 +796,16 @@
           <option value="SZ">深A</option>
         </select>
         <input v-model="marketKeyword" placeholder="代码/名称检索" class="field-flex" />
-        <button @click="loadMarketList">刷新行情</button>
+        <button type="button" @click="loadMarketList(true)">刷新行情</button>
       </div>
     </div>
 
     <div v-if="activeNav === 'market-center'" class="card">
-      <h3 class="title">行情列表</h3>
+      <div class="market-list-head">
+        <h3 class="title">行情列表</h3>
+        <span class="order-list-sub">每页 {{ marketQuotesPageSize }} 条</span>
+        <span v-if="marketQuotesTotal > 0" class="market-list-meta">共 {{ marketQuotesTotal }} 条</span>
+      </div>
       <table class="market-table">
         <colgroup>
           <col class="col-market" />
@@ -852,6 +856,29 @@
           </tr>
         </tbody>
       </table>
+      <div class="market-pagination">
+        <span class="market-pagination-meta">
+          第 <strong>{{ marketQuotesPage }}</strong> / {{ marketQuotesTotalPages }} 页
+        </span>
+        <div class="market-pagination-actions">
+          <button
+            type="button"
+            class="secondary"
+            :disabled="marketQuotesPage <= 1"
+            @click="goMarketQuotePage('prev')"
+          >
+            上一页
+          </button>
+          <button
+            type="button"
+            class="secondary"
+            :disabled="marketQuotesPage >= marketQuotesTotalPages"
+            @click="goMarketQuotePage('next')"
+          >
+            下一页
+          </button>
+        </div>
+      </div>
     </div>
     <div v-if="activeNav === 'market-center' && message" class="card message">{{ message }}</div>
 
@@ -959,6 +986,10 @@ const activeNav = ref("opening-audit");
 const marketFilter = ref("");
 const marketKeyword = ref("");
 const marketQuotes = ref([]);
+/** 行情列表分页（与 GET /api/app/market/quotes 一致） */
+const marketQuotesPage = ref(1);
+const marketQuotesPageSize = ref(20);
+const marketQuotesTotal = ref(0);
 const orderSourceFilter = ref("APP");
 const orderStatusFilter = ref("");
 /** 进行中 | 已完成 | 已撤单 */
@@ -1022,13 +1053,20 @@ const orderEmptyHint = computed(() => {
   return "暂无进行中委托，可切换「已完成」「已撤单」或调整状态筛选后刷新";
 });
 
+const marketQuotesTotalPages = computed(() => {
+  const t = marketQuotesTotal.value;
+  const s = marketQuotesPageSize.value;
+  if (!s || t <= 0) return 1;
+  return Math.max(1, Math.ceil(t / s));
+});
+
 onMounted(() => {
   if (!localStorage.getItem("op_token")) {
     router.push("/login");
     return;
   }
   loadApplications();
-  loadMarketList();
+  loadMarketList(true);
   loadOrderList();
   loadCustomers();
 });
@@ -1104,21 +1142,42 @@ async function importOneAppRecord(id) {
   }
 }
 
-async function loadMarketList() {
+async function loadMarketList(resetPage = false) {
+  if (resetPage) {
+    marketQuotesPage.value = 1;
+  }
   try {
     const data = await listMarketQuotes({
       market: marketFilter.value || undefined,
       keyword: marketKeyword.value || undefined,
-      page: 1,
-      pageSize: 100
+      page: marketQuotesPage.value,
+      pageSize: marketQuotesPageSize.value
     });
     marketQuotes.value = data?.list || [];
+    marketQuotesTotal.value = Number(data?.total ?? 0);
+    const totalPages = Math.max(1, Math.ceil(marketQuotesTotal.value / marketQuotesPageSize.value) || 1);
+    if (marketQuotesPage.value > totalPages) {
+      marketQuotesPage.value = totalPages;
+      await loadMarketList(false);
+      return;
+    }
     if (activeNav.value === "market-center") {
       message.value = "";
     }
   } catch (e) {
     message.value = e?.response?.data?.message || e.message || "查询行情失败";
   }
+}
+
+function goMarketQuotePage(dir) {
+  if (dir === "prev") {
+    if (marketQuotesPage.value <= 1) return;
+    marketQuotesPage.value -= 1;
+  } else {
+    if (marketQuotesPage.value >= marketQuotesTotalPages.value) return;
+    marketQuotesPage.value += 1;
+  }
+  loadMarketList(false);
 }
 
 async function loadOrderList() {
@@ -1316,7 +1375,7 @@ function onNavClick(item) {
   if (item.key === "opening-audit" || item.key === "market-center" || item.key === "order-center" || item.key === "customer-center") {
     activeNav.value = item.key;
     if (item.key === "market-center") {
-      loadMarketList();
+      loadMarketList(true);
     } else if (item.key === "order-center") {
       loadOrderList();
     } else if (item.key === "customer-center") {
