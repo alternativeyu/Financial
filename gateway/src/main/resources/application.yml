@@ -1,0 +1,45 @@
+# 网关与后端错开；可用 GATEWAY_SERVER_PORT 覆盖
+server:
+  port: ${GATEWAY_SERVER_PORT:28481}
+
+spring:
+  application:
+    name: financial-api-gateway
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+  cloud:
+    gateway:
+      globalcors:
+        cors-configurations:
+          "[/**]":
+            allowedOriginPatterns:
+              - "http://localhost:*"
+              - "http://127.0.0.1:*"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+              - PATCH
+            allowedHeaders: "*"
+            allowCredentials: true
+      routes:
+        - id: financial-backend
+          uri: ${GATEWAY_BACKEND_URI:http://127.0.0.1:28480}
+          predicates:
+            - Path=/api/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: ${GATEWAY_REPLENISH_RATE:200}
+                redis-rate-limiter.burstCapacity: ${GATEWAY_BURST_CAPACITY:400}
+                key-resolver: "#{@ipKeyResolver}"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

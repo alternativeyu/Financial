@@ -3,8 +3,11 @@ package com.financial.operator.controller;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -14,6 +17,9 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import com.financial.operator.infra.messaging.TradeDomainEventPublisher;
+import com.financial.operator.infra.messaging.TradeSettledPayload;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -34,10 +40,14 @@ public class TradeController {
     /** 卖出印花税率（演示用） */
     private static final BigDecimal DEFAULT_STAMP_SELL_RATE = new BigDecimal("0.001");
 
-    private final JdbcTemplate jdbcTemplate;
+    private static final long SYSTEM_AUDIT_OPERATOR_ID = 900001L;
 
-    public TradeController(JdbcTemplate jdbcTemplate) {
+    private final JdbcTemplate jdbcTemplate;
+    private final ObjectProvider<TradeDomainEventPublisher> tradeDomainEventPublisher;
+
+    public TradeController(JdbcTemplate jdbcTemplate, ObjectProvider<TradeDomainEventPublisher> tradeDomainEventPublisher) {
         this.jdbcTemplate = jdbcTemplate;
+        this.tradeDomainEventPublisher = tradeDomainEventPublisher;
     }
 
     @GetMapping("/operator/trade/orders")
@@ -928,7 +938,7 @@ public class TradeController {
                 """
                 SELECT o.id, o.order_no, o.customer_id, o.fund_account_id, o.security_id, o.market_code, o.security_code,
                        o.trade_direction, o.order_price, o.order_qty, o.filled_qty, o.filled_amount, o.avg_fill_price,
-                       o.frozen_cash, o.frozen_qty, o.order_status
+                       o.frozen_cash, o.frozen_qty, o.order_status, o.source_type
                 FROM trd_order o
                 WHERE o.order_no = ?
                 LIMIT 1
@@ -938,6 +948,7 @@ public class TradeController {
         if (order == null) {
             throw new IllegalArgumentException("委托单不存在");
         }
+        String sourceType = asString(order.get("source_type"));
         String orderStatus = asString(order.get("order_status"));
         if (!"REPORTED".equals(orderStatus) && !"PART_FILLED".equals(orderStatus)) {
             throw new IllegalArgumentException("仅已报或部成委托可成交");
@@ -1254,7 +1265,7 @@ public class TradeController {
 
         long matchDispatchId = nextId();
         String matchDispatchNo = "DP" + LocalDate.now().format(DATE_FMT) + String.format("%06d", matchDispatchId % 1_000_000);
-        String payload = "{\"tradeNo\":\"" + tradeNo.replace("\\", "\\\\").replace("\"", "\\\"")
+        String matchDispatchPayload = "{\"tradeNo\":\"" + tradeNo.replace("\\", "\\\\").replace("\"", "\\\"")
                 + "\",\"fillQty\":" + fillQty + ",\"fillPrice\":" + fillPrice + "}";
         jdbcTemplate.update(
                 """
@@ -1262,7 +1273,7 @@ public class TradeController {
                 (id, dispatch_no, order_id, dispatch_type, request_seq_no, request_payload, dispatch_status, external_order_no, sent_at, reply_deadline, created_at)
                 VALUES (?, ?, ?, 'MATCH', ?, ?, 'ACCEPTED', ?, NOW(), NULL, NOW())
                 """,
-                matchDispatchId, matchDispatchNo, orderId, requestSeqNo.trim(), payload, tradeNo
+                matchDispatchId, matchDispatchNo, orderId, requestSeqNo.trim(), matchDispatchPayload, tradeNo
         );
 
         Map<String, Object> data = new LinkedHashMap<>();
@@ -1280,6 +1291,37 @@ public class TradeController {
         data.put("otherFeeAmount", feeOther);
         data.put("netSettleAmount", netSettle);
         data.put("idempotent", false);
+
+        TradeDomainEventPublisher publisher = tradeDomainEventPublisher.getIfAvailable();
+        if (publisher != null) {
+            Long opForPayload = operatorId != null ? operatorId : SYSTEM_AUDIT_OPERATOR_ID;
+            TradeSettledPayload settledEvent = new TradeSettledPayload(
+                    tradeId,
+                    tradeNo,
+                    orderNo,
+                    orderId,
+                    customerId,
+                    opForPayload,
+                    sourceType,
+                    direction,
+                    fillQty,
+                    fillPrice,
+                    fillValue,
+                    feeComm,
+                    feeStamp,
+                    newStatus
+            );
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        publisher.publishTradeSettled(settledEvent);
+                    }
+                });
+            } else {
+                publisher.publishTradeSettled(settledEvent);
+            }
+        }
         return data;
     }
 

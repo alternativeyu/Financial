@@ -1,5 +1,6 @@
+# 默认高位端口，减少与常见 8080/8081/8082 冲突；可用环境变量 SERVER_PORT 覆盖
 server:
-  port: 8080
+  port: ${SERVER_PORT:28480}
 
 spring:
   application:
@@ -9,3 +10,29 @@ spring:
     username: root
     password: lyb050527
     driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+  cache:
+    type: redis
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:guest}
+    password: ${RABBITMQ_PASS:guest}
+    listener:
+      simple:
+        auto-startup: ${FINANCIAL_MESSAGING_ENABLED:true}
+        prefetch: 16
+        concurrency: 1
+
+financial:
+  messaging:
+    enabled: ${FINANCIAL_MESSAGING_ENABLED:true}
+  ratelimit:
+    # 同一 IP 每分钟允许发起的「下单」POST 次数（网关另有全局限流）
+    orders-per-minute-per-ip: ${RATE_LIMIT_ORDERS_PER_MIN:120}
+  gateway:
+    # 由网关转发时，可信任该头作为客户端 IP（网关需设置）
+    client-ip-header: X-Forwarded-For

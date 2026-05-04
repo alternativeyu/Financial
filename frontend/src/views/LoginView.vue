@@ -75,7 +75,8 @@ async function submit() {
     localStorage.setItem("op_name", data.operatorName);
     await router.push("/opening-audit");
   } catch (e) {
-    message.value = e?.response?.data?.message || e.message || "操作失败";
+    message.value =
+      e?.response?.data?.message || e?.hint || e?.message || "操作失败";
   } finally {
     loading.value = false;
   }

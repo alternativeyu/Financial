@@ -1,5 +1,7 @@
 # Android 端：冻结资金 / 冻结持仓与交易接口说明
 
+> **环境与 Base URL**：见 **`ANDROID_环境与BaseURL对齐说明.md`**。
+
 面向客户端开发与产品设计，说明**资金与股份如何冻结、何时解冻**，以及**调哪些接口、界面怎么设计**。
 
 ---
@@ -31,7 +33,7 @@
 
 ## 2. Base URL 与通用约定
 
-- **App 接口 Base**：`http://<host>:8080/api/app`（下文路径均相对该前缀）。
+- **App 接口 Base**：`http://<host>:28480/api/app`（下文路径均相对该前缀；端口以服务端 `SERVER_PORT` 为准）。
 - 统一响应：`{ "code": 0, "message": "success", "data": { ... } }`；`code != 0` 表示失败，**优先用 `message` 提示用户**。
 - JSON 字段为 **camelCase**（如 `fundAccountNo`、`requestSeqNo`）。列表里价格同时提供 **`orderPrice`** 与别名 **`price`**，数量有 **`orderQty`** 与 **`quantity`**，便于 Gson 直接映射。
 

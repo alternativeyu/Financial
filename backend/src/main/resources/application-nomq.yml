@@ -1,0 +1,10 @@
+# 无 RabbitMQ 时使用：java -jar app.jar --spring.profiles.active=nomq
+# 仍可使用 Redis（缓存与限流）；仅关闭消息队列自动配置与事件发布 Bean。
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.amqp.RabbitAutoConfiguration
+
+financial:
+  messaging:
+    enabled: false

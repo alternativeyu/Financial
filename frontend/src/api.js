@@ -1,14 +1,39 @@
 import axios from "axios";
 
+/**
+ * 开发环境默认走 Vite 代理（同源 /api → VITE_PROXY_TARGET，默认 28480），避免写死端口与跨域问题。
+ * 需要直连后端/网关时：.env.local 中设置 VITE_DEV_PROXY=0 与 VITE_API_HOST=...
+ */
+const devUseProxy = import.meta.env.DEV && import.meta.env.VITE_DEV_PROXY !== "0";
+const API_HOST = devUseProxy ? "" : import.meta.env.VITE_API_HOST ?? "http://127.0.0.1:28480";
+
 const http = axios.create({
-  baseURL: "http://127.0.0.1:8080/api/operator",
+  baseURL: `${API_HOST}/api/operator`,
   timeout: 10000
 });
 
 const appHttp = axios.create({
-  baseURL: "http://127.0.0.1:8080/api/app",
+  baseURL: `${API_HOST}/api/app`,
   timeout: 10000
 });
+
+function attachNetworkHint(client) {
+  client.interceptors.response.use(
+    (r) => r,
+    (err) => {
+      if (!err.response) {
+        const base = client.defaults.baseURL || "";
+        err.hint =
+          "无法连接后端。请确认：① operator-backend 已启动；② 端口为 28480（或与本机 SERVER_PORT 一致）；③ 开发环境可删除 .env.local 中的 VITE_DEV_PROXY=0 以使用 Vite 代理。" +
+          (base ? ` 当前请求基址：${base}` : "");
+      }
+      return Promise.reject(err);
+    }
+  );
+}
+
+attachNetworkHint(http);
+attachNetworkHint(appHttp);
 
 http.interceptors.request.use((config) => {
   const token = localStorage.getItem("op_token");
