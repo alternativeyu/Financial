@@ -3,7 +3,7 @@
 本文档与仓库内 **`backend/src/main/resources/application.yml`**、**`gateway/src/main/resources/application.yml`**、**`frontend`** 的约定保持一致，便于 Android 只改一处即可对齐联调/部署。
 
 > 专项接口细节仍以各文档为准：  
-> `ANDROID_行情查看接口对接文档.md`、`ANDROID_委托撤单多资金账户对接文档.md`、`ANDROID_冻结资金与交易接口说明.md`。
+> `ANDROID_行情查看接口对接文档.md`、`ANDROID_委托撤单多资金账户对接文档.md`、`ANDROID_冻结资金与交易接口说明.md`、`ANDROID_报表查询接口对接说明.md`。
 
 ---
 

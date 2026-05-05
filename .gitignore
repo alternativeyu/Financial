@@ -8,6 +8,7 @@
 # Java / Maven
 backend/target/
 gateway/target/
+mock-exchange/target/
 *.class
 *.jar
 *.war

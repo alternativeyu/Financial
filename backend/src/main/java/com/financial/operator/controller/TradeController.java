@@ -7,6 +7,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,8 +19,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.financial.operator.infra.integration.MockExchangeClient;
 import com.financial.operator.infra.messaging.TradeDomainEventPublisher;
 import com.financial.operator.infra.messaging.TradeSettledPayload;
+import com.financial.operator.service.TradingFeeRuleService;
+import com.financial.operator.service.TradingFeeRuleService.CommissionRule;
+import com.financial.operator.service.UnifiedBusinessQueryService;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -28,6 +33,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 @Validated
 @RestController
@@ -35,19 +41,30 @@ import java.util.Map;
 public class TradeController {
 
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyyMMdd");
-    /** 双边佣金率（演示用固定值，可后续接 md_commission_rule） */
-    private static final BigDecimal DEFAULT_COMM_RATE = new BigDecimal("0.00025");
-    /** 卖出印花税率（演示用） */
-    private static final BigDecimal DEFAULT_STAMP_SELL_RATE = new BigDecimal("0.001");
 
     private static final long SYSTEM_AUDIT_OPERATOR_ID = 900001L;
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectProvider<TradeDomainEventPublisher> tradeDomainEventPublisher;
+    private final UnifiedBusinessQueryService businessQueryService;
+    private final TradingFeeRuleService tradingFeeRuleService;
+    private final TransactionTemplate transactionTemplate;
+    private final MockExchangeClient mockExchangeClient;
 
-    public TradeController(JdbcTemplate jdbcTemplate, ObjectProvider<TradeDomainEventPublisher> tradeDomainEventPublisher) {
+    public TradeController(
+            JdbcTemplate jdbcTemplate,
+            ObjectProvider<TradeDomainEventPublisher> tradeDomainEventPublisher,
+            UnifiedBusinessQueryService businessQueryService,
+            TradingFeeRuleService tradingFeeRuleService,
+            TransactionTemplate transactionTemplate,
+            MockExchangeClient mockExchangeClient
+    ) {
         this.jdbcTemplate = jdbcTemplate;
         this.tradeDomainEventPublisher = tradeDomainEventPublisher;
+        this.businessQueryService = businessQueryService;
+        this.tradingFeeRuleService = tradingFeeRuleService;
+        this.transactionTemplate = transactionTemplate;
+        this.mockExchangeClient = mockExchangeClient;
     }
 
     @GetMapping("/operator/trade/orders")
@@ -60,72 +77,11 @@ public class TradeController {
             @RequestParam(defaultValue = "20") Integer pageSize
     ) {
         try {
-            requireOperatorId(token);
             int pageNo = page == null || page < 1 ? 1 : page;
             int size = pageSize == null ? 20 : Math.min(Math.max(pageSize, 1), 100);
-            int offset = (pageNo - 1) * size;
-            String sourceFilter = isBlank(sourceType) ? null : sourceType.trim().toUpperCase();
-            String statusFilter = isBlank(orderStatus) ? null : orderStatus.trim().toUpperCase();
-            String group = isBlank(orderStatusGroup) ? null : orderStatusGroup.trim().toUpperCase();
-            if (group != null && !"ACTIVE".equals(group) && !"CANCELED".equals(group) && !"COMPLETED".equals(group)) {
-                throw new IllegalArgumentException("orderStatusGroup 仅支持 ACTIVE、COMPLETED 或 CANCELED");
-            }
-
-            String where = """
-                    WHERE (? IS NULL OR o.source_type = ?)
-                      AND (? IS NULL OR o.order_status = ?)
-                      AND (? IS NULL OR (
-                           (? = 'ACTIVE' AND o.order_status IN ('INIT','REPORTED','PART_FILLED'))
-                        OR (? = 'COMPLETED' AND (o.order_status = 'FILLED' OR (o.order_status = 'PART_CANCELED' AND o.filled_qty > 0)))
-                        OR (? = 'CANCELED' AND o.order_status IN ('CANCELED','PART_CANCELED'))
-                      ))
-                    """;
-
-            Integer total = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(1) FROM trd_order o " + where,
-                    Integer.class,
-                    sourceFilter, sourceFilter, statusFilter, statusFilter, group, group, group, group
-            );
-
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                    """
-                    SELECT
-                      o.id,
-                      o.order_no,
-                      o.source_type,
-                      o.customer_id,
-                      fa.fund_account_no,
-                      o.market_code,
-                      o.security_code,
-                      o.security_name_snapshot,
-                      o.trade_direction,
-                      o.order_price,
-                      o.order_qty,
-                      o.filled_qty,
-                      o.order_status,
-                      o.created_at,
-                      c.cancel_status AS last_cancel_status
-                    FROM trd_order o
-                    LEFT JOIN acct_fund_account fa ON fa.id = o.fund_account_id
-                    LEFT JOIN trd_cancel_request c
-                      ON c.order_id = o.id
-                     AND c.request_time = (
-                       SELECT MAX(c2.request_time) FROM trd_cancel_request c2 WHERE c2.order_id = o.id
-                     )
-                    """ + where + """
-                    ORDER BY o.created_at DESC
-                    LIMIT ? OFFSET ?
-                    """,
-                    sourceFilter, sourceFilter, statusFilter, statusFilter, group, group, group, group, size, offset
-            );
-
-            List<Map<String, Object>> list = rows.stream().map(this::toOrderListItem).toList();
-            Map<String, Object> data = new LinkedHashMap<>();
-            data.put("page", pageNo);
-            data.put("pageSize", size);
-            data.put("total", total == null ? 0 : total);
-            data.put("list", list);
-            return ApiResponse.ok(data);
+            return ApiResponse.ok(businessQueryService.listOrdersByOperatorPaged(
+                    token, sourceType, orderStatus, orderStatusGroup, pageNo, size
+            ));
         } catch (IllegalArgumentException ex) {
             return ApiResponse.fail(1001, ex.getMessage());
         }
@@ -151,94 +107,21 @@ public class TradeController {
             @RequestParam(defaultValue = "20") Integer pageSize
     ) {
         try {
-            ensureActiveAppUser(userId);
-            Long customerId = findLatestOpenedCustomerByUser(userId);
-            if (customerId == null) {
-                return ApiResponse.fail(2001, "客户未开户");
-            }
             int pageNo = page == null || page < 1 ? 1 : page;
             int size = pageSize == null ? 20 : Math.min(Math.max(pageSize, 1), 100);
-            int offset = (pageNo - 1) * size;
-            String fundFilter = isBlank(fundAccountNo) ? null : fundAccountNo.trim();
-            String statusFilter = isBlank(orderStatus) ? null : orderStatus.trim().toUpperCase();
-            String listCat = isBlank(orderListCategory) ? null : orderListCategory.trim().toUpperCase();
-            if ("FILLED".equals(listCat)) {
-                listCat = "COMPLETED";
-            }
-            if (listCat != null && !"ONGOING".equals(listCat) && !"COMPLETED".equals(listCat) && !"CANCELED".equals(listCat)) {
-                throw new IllegalArgumentException("orderListCategory 仅支持 ONGOING、COMPLETED（或别名 FILLED）、CANCELED");
-            }
-
-            String where = """
-                    WHERE o.customer_id = ?
-                      AND o.source_type = 'APP'
-                      AND (? IS NULL OR fa.fund_account_no = ?)
-                      AND (? IS NULL OR o.order_status = ?)
-                      AND (? IS NULL OR (
-                           (? = 'ONGOING' AND o.order_status IN ('INIT','REPORTED','PART_FILLED'))
-                        OR (? = 'COMPLETED' AND (o.order_status = 'FILLED' OR (o.order_status = 'PART_CANCELED' AND o.filled_qty > 0)))
-                        OR (? = 'CANCELED' AND o.order_status IN ('CANCELED','PART_CANCELED'))
-                      ))
-                    """;
-
-            Integer total = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(1) FROM trd_order o "
-                            + "LEFT JOIN acct_fund_account fa ON fa.id = o.fund_account_id "
-                            + where,
-                    Integer.class,
-                    customerId, fundFilter, fundFilter, statusFilter, statusFilter,
-                    listCat, listCat, listCat, listCat
-            );
-
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                    """
-                    SELECT
-                      o.id,
-                      o.order_no,
-                      o.source_type,
-                      o.customer_id,
-                      fa.fund_account_no,
-                      o.market_code,
-                      o.security_code,
-                      o.security_name_snapshot,
-                      o.trade_direction,
-                      o.order_price,
-                      o.order_qty,
-                      o.filled_qty,
-                      o.order_status,
-                      o.created_at,
-                      c.cancel_status AS last_cancel_status
-                    FROM trd_order o
-                    LEFT JOIN acct_fund_account fa ON fa.id = o.fund_account_id
-                    LEFT JOIN trd_cancel_request c
-                      ON c.order_id = o.id
-                     AND c.request_time = (
-                       SELECT MAX(c2.request_time) FROM trd_cancel_request c2 WHERE c2.order_id = o.id
-                     )
-                    """
-                            + where
-                            + """
-                    ORDER BY o.created_at DESC
-                    LIMIT ? OFFSET ?
-                    """,
-                    customerId, fundFilter, fundFilter, statusFilter, statusFilter,
-                    listCat, listCat, listCat, listCat, size, offset
-            );
-
-            List<Map<String, Object>> list = rows.stream().map(this::toOrderListItem).toList();
-            Map<String, Object> data = new LinkedHashMap<>();
-            data.put("page", pageNo);
-            data.put("pageSize", size);
-            data.put("total", total == null ? 0 : total);
-            data.put("list", list);
-            return ApiResponse.ok(data);
+            return ApiResponse.ok(businessQueryService.listOrdersByAppPaged(
+                    userId, fundAccountNo, orderStatus, orderListCategory, pageNo, size
+            ));
         } catch (IllegalArgumentException ex) {
-            return ApiResponse.fail(1001, ex.getMessage());
+            String msg = ex.getMessage();
+            if ("客户未开户".equals(msg)) {
+                return ApiResponse.fail(2001, msg);
+            }
+            return ApiResponse.fail(1001, msg);
         }
     }
 
     @PostMapping("/app/trade/orders")
-    @Transactional
     public ApiResponse<Map<String, Object>> submitOrderByApp(@Valid @RequestBody AppOrderSubmitRequest request) {
         try {
             ensureActiveAppUser(request.userId());
@@ -264,7 +147,6 @@ public class TradeController {
     }
 
     @PostMapping("/operator/trade/orders")
-    @Transactional
     public ApiResponse<Map<String, Object>> submitOrderByOperator(
             @RequestHeader("X-Operator-Token") String token,
             @Valid @RequestBody OperatorOrderSubmitRequest request
@@ -381,6 +263,208 @@ public class TradeController {
         }
     }
 
+    private record SubmitOrderPhase1(
+            long orderId,
+            long dispatchId,
+            String dispatchNo,
+            String orderNo,
+            String fundAccountNo,
+            BigDecimal frozenCash,
+            long frozenQty
+    ) {}
+
+    private void applyLocalOrderExchangeAcceptance(long dispatchId, long orderId, String orderNo) {
+        transactionTemplate.execute(status -> {
+            long replyId = nextId();
+            String replyNo = "RP" + LocalDate.now().format(DATE_FMT) + String.format("%06d", replyId % 1000000);
+            jdbcTemplate.update(
+                    """
+                    INSERT INTO rpt_order_reply
+                    (id, reply_no, dispatch_id, order_id, cancel_request_id, reply_type, external_order_no, external_trade_no,
+                     accept_code, accept_message, reply_payload, received_at)
+                    VALUES (?, ?, ?, ?, NULL, 'ORDER_ACCEPT', ?, NULL, '0', '受理成功', ?, NOW())
+                    """,
+                    replyId, replyNo, dispatchId, orderId, "EX" + orderNo, "{\"result\":\"ACCEPTED\"}"
+            );
+            jdbcTemplate.update("UPDATE rpt_order_dispatch SET dispatch_status = 'ACCEPTED' WHERE id = ?", dispatchId);
+            jdbcTemplate.update("UPDATE trd_order SET order_status = 'REPORTED', dispatch_status = 'ACCEPTED', updated_at = NOW() WHERE id = ?", orderId);
+            return null;
+        });
+    }
+
+    private SubmitOrderPhase1 executeOrderPersistPhase(
+            Long customerId,
+            String fundAccountNo,
+            String marketCode,
+            String securityCode,
+            String direction,
+            BigDecimal price,
+            Long quantity,
+            String requestSeqNo,
+            String sourceType,
+            Long operatorId
+    ) {
+        Map<String, Object> fund = queryOne(
+                """
+                SELECT id, customer_id, fund_account_no, available_balance, frozen_balance, status
+                FROM acct_fund_account
+                WHERE customer_id = ? AND fund_account_no = ?
+                LIMIT 1
+                """,
+                customerId, fundAccountNo
+        );
+        if (fund == null) {
+            throw new IllegalArgumentException("资金账户不存在或不属于该客户");
+        }
+        if (!"NORMAL".equalsIgnoreCase(asString(fund.get("status")))) {
+            throw new IllegalArgumentException("资金账户状态异常，禁止交易");
+        }
+        Long fundAccountId = toLong(fund.get("id"));
+
+        Map<String, Object> shareholder = queryOne(
+                """
+                SELECT id, shareholder_account_no, account_status
+                FROM acct_shareholder_account
+                WHERE customer_id = ? AND market_code = ?
+                LIMIT 1
+                """,
+                customerId, marketCode
+        );
+        if (shareholder == null) {
+            throw new IllegalArgumentException("股东账户不存在");
+        }
+        if (!"NORMAL".equalsIgnoreCase(asString(shareholder.get("account_status")))) {
+            throw new IllegalArgumentException("股东账户状态异常");
+        }
+        Long shareholderAccountId = toLong(shareholder.get("id"));
+
+        Map<String, Object> security = queryOne(
+                """
+                SELECT id, security_name, lot_size, listed_status, security_type
+                FROM md_security
+                WHERE market_code = ? AND security_code = ?
+                LIMIT 1
+                """,
+                marketCode, securityCode
+        );
+        if (security == null) {
+            throw new IllegalArgumentException("证券代码不存在");
+        }
+        if (!"1".equals(asString(security.get("listed_status")))) {
+            throw new IllegalArgumentException("证券不可交易");
+        }
+        int lotSize = ((Number) security.get("lot_size")).intValue();
+        if (quantity % lotSize != 0) {
+            throw new IllegalArgumentException("委托数量不符合交易单位");
+        }
+        Long securityId = toLong(security.get("id"));
+        String securityName = asString(security.get("security_name"));
+        String securityType = emptyToNull(asString(security.get("security_type")));
+        if (isBlank(securityType)) {
+            securityType = "COMMON";
+        }
+
+        List<String> acctClsRows = jdbcTemplate.queryForList(
+                "SELECT acct_cls_code FROM cust_customer WHERE id = ? LIMIT 1",
+                String.class,
+                customerId
+        );
+        String acctClsCode = acctClsRows.isEmpty() || isBlank(acctClsRows.get(0)) ? "NORMAL" : acctClsRows.get(0).trim();
+
+        Map<String, Object> quote = queryOne(
+                """
+                SELECT upper_limit_price, lower_limit_price
+                FROM md_market_quote
+                WHERE security_id = ?
+                ORDER BY quote_time DESC
+                LIMIT 1
+                """,
+                securityId
+        );
+        if (quote != null) {
+            BigDecimal upper = asDecimal(quote.get("upper_limit_price"));
+            BigDecimal lower = asDecimal(quote.get("lower_limit_price"));
+            if (upper != null && price.compareTo(upper) > 0) {
+                throw new IllegalArgumentException("委托价格超过涨停价");
+            }
+            if (lower != null && price.compareTo(lower) < 0) {
+                throw new IllegalArgumentException("委托价格低于跌停价");
+            }
+        }
+
+        BigDecimal orderAmount = price.multiply(BigDecimal.valueOf(quantity)).setScale(4, RoundingMode.HALF_UP);
+        BigDecimal frozenCash = BigDecimal.ZERO;
+        long frozenQty = 0L;
+
+        if ("B".equals(direction)) {
+            CommissionRule commRule = tradingFeeRuleService.loadCommission(acctClsCode, marketCode, securityType);
+            BigDecimal estComm = tradingFeeRuleService.commissionOnTurnover(orderAmount, commRule);
+            BigDecimal estStampBuy = tradingFeeRuleService.buyStampOnTurnover(orderAmount, marketCode, securityType);
+            BigDecimal totalBuyFreeze = orderAmount.add(estComm).add(estStampBuy).setScale(4, RoundingMode.HALF_UP);
+            int updated = jdbcTemplate.update(
+                    """
+                    UPDATE acct_fund_account
+                    SET available_balance = available_balance - ?,
+                        frozen_balance = frozen_balance + ?,
+                        current_balance = (available_balance - ?) + (frozen_balance + ?),
+                        version = version + 1,
+                        updated_at = NOW()
+                    WHERE id = ? AND available_balance >= ?
+                    """,
+                    totalBuyFreeze, totalBuyFreeze, totalBuyFreeze, totalBuyFreeze, fundAccountId, totalBuyFreeze
+            );
+            if (updated == 0) {
+                throw new IllegalArgumentException("可用资金不足（含预估佣金/税费）");
+            }
+            frozenCash = totalBuyFreeze;
+        } else {
+            int updated = jdbcTemplate.update(
+                    """
+                    UPDATE acct_position
+                    SET available_qty = available_qty - ?,
+                        frozen_qty = frozen_qty + ?,
+                        version = version + 1,
+                        updated_at = NOW()
+                    WHERE fund_account_id = ? AND security_id = ? AND available_qty >= ?
+                    """,
+                    quantity, quantity, fundAccountId, securityId, quantity
+            );
+            if (updated == 0) {
+                throw new IllegalArgumentException("可卖持仓不足");
+            }
+            frozenQty = quantity;
+        }
+
+        long orderId = nextId();
+        String orderNo = "OD" + LocalDate.now().format(DATE_FMT) + String.format("%06d", orderId % 1000000);
+        jdbcTemplate.update(
+                """
+                INSERT INTO trd_order
+                (id, order_no, customer_id, fund_account_id, shareholder_account_id, security_id, market_code,
+                 security_code, security_name_snapshot, trade_direction, order_price, order_qty, order_amount,
+                 filled_qty, filled_amount, avg_fill_price, frozen_cash, frozen_qty, order_status, risk_check_result,
+                 dispatch_status, source_type, created_by, created_at, updated_at, version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, 'INIT', 'PASS', 'WAIT', ?, ?, NOW(), NOW(), 0)
+                """,
+                orderId, orderNo, customerId, fundAccountId, shareholderAccountId, securityId, marketCode,
+                securityCode, securityName, direction, price, quantity, orderAmount, frozenCash, frozenQty,
+                sourceType, operatorId
+        );
+
+        long dispatchId = nextId();
+        String dispatchNo = "DP" + LocalDate.now().format(DATE_FMT) + String.format("%06d", dispatchId % 1000000);
+        jdbcTemplate.update(
+                """
+                INSERT INTO rpt_order_dispatch
+                (id, dispatch_no, order_id, dispatch_type, request_seq_no, request_payload, dispatch_status, sent_at, reply_deadline, created_at)
+                VALUES (?, ?, ?, 'ORDER', ?, ?, 'SENT', NOW(), DATE_ADD(NOW(), INTERVAL 30 SECOND), NOW())
+                """,
+                dispatchId, dispatchNo, orderId, requestSeqNo.trim(), buildOrderRequestPayload(marketCode, securityCode, direction, price, quantity)
+        );
+
+        return new SubmitOrderPhase1(orderId, dispatchId, dispatchNo, orderNo, fundAccountNo, frozenCash, frozenQty);
+    }
+
     private Map<String, Object> submitOrderInternal(
             Long customerId,
             String fundAccountNoInput,
@@ -435,172 +519,26 @@ public class TradeController {
             return data;
         }
 
-        Map<String, Object> fund = queryOne(
-                """
-                SELECT id, customer_id, fund_account_no, available_balance, frozen_balance, status
-                FROM acct_fund_account
-                WHERE customer_id = ? AND fund_account_no = ?
-                LIMIT 1
-                """,
-                customerId, fundAccountNo
-        );
-        if (fund == null) {
-            throw new IllegalArgumentException("资金账户不存在或不属于该客户");
-        }
-        if (!"NORMAL".equalsIgnoreCase(asString(fund.get("status")))) {
-            throw new IllegalArgumentException("资金账户状态异常，禁止交易");
-        }
-        Long fundAccountId = toLong(fund.get("id"));
+        SubmitOrderPhase1 phase1 = Objects.requireNonNull(
+                transactionTemplate.execute(status -> executeOrderPersistPhase(
+                        customerId, fundAccountNo, marketCode, securityCode, direction, price, quantity,
+                        requestSeqNo, sourceType, operatorId)),
+                "order persist phase");
 
-        Map<String, Object> shareholder = queryOne(
-                """
-                SELECT id, shareholder_account_no, account_status
-                FROM acct_shareholder_account
-                WHERE customer_id = ? AND market_code = ?
-                LIMIT 1
-                """,
-                customerId, marketCode
-        );
-        if (shareholder == null) {
-            throw new IllegalArgumentException("股东账户不存在");
-        }
-        if (!"NORMAL".equalsIgnoreCase(asString(shareholder.get("account_status")))) {
-            throw new IllegalArgumentException("股东账户状态异常");
-        }
-        Long shareholderAccountId = toLong(shareholder.get("id"));
-
-        Map<String, Object> security = queryOne(
-                """
-                SELECT id, security_name, lot_size, listed_status
-                FROM md_security
-                WHERE market_code = ? AND security_code = ?
-                LIMIT 1
-                """,
-                marketCode, securityCode
-        );
-        if (security == null) {
-            throw new IllegalArgumentException("证券代码不存在");
-        }
-        if (!"1".equals(asString(security.get("listed_status")))) {
-            throw new IllegalArgumentException("证券不可交易");
-        }
-        int lotSize = ((Number) security.get("lot_size")).intValue();
-        if (quantity % lotSize != 0) {
-            throw new IllegalArgumentException("委托数量不符合交易单位");
-        }
-        Long securityId = toLong(security.get("id"));
-        String securityName = asString(security.get("security_name"));
-
-        Map<String, Object> quote = queryOne(
-                """
-                SELECT upper_limit_price, lower_limit_price
-                FROM md_market_quote
-                WHERE security_id = ?
-                ORDER BY quote_time DESC
-                LIMIT 1
-                """,
-                securityId
-        );
-        if (quote != null) {
-            BigDecimal upper = asDecimal(quote.get("upper_limit_price"));
-            BigDecimal lower = asDecimal(quote.get("lower_limit_price"));
-            if (upper != null && price.compareTo(upper) > 0) {
-                throw new IllegalArgumentException("委托价格超过涨停价");
-            }
-            if (lower != null && price.compareTo(lower) < 0) {
-                throw new IllegalArgumentException("委托价格低于跌停价");
-            }
-        }
-
-        BigDecimal orderAmount = price.multiply(BigDecimal.valueOf(quantity)).setScale(4, RoundingMode.HALF_UP);
-        BigDecimal frozenCash = BigDecimal.ZERO;
-        long frozenQty = 0L;
-
-        if ("B".equals(direction)) {
-            int updated = jdbcTemplate.update(
-                    """
-                    UPDATE acct_fund_account
-                    SET available_balance = available_balance - ?,
-                        frozen_balance = frozen_balance + ?,
-                        current_balance = (available_balance - ?) + (frozen_balance + ?),
-                        version = version + 1,
-                        updated_at = NOW()
-                    WHERE id = ? AND available_balance >= ?
-                    """,
-                    orderAmount, orderAmount, orderAmount, orderAmount, fundAccountId, orderAmount
-            );
-            if (updated == 0) {
-                throw new IllegalArgumentException("可用资金不足");
-            }
-            frozenCash = orderAmount;
+        if (mockExchangeClient.isRemoteEnabled()) {
+            mockExchangeClient.acceptOrderReport(phase1.dispatchId(), phase1.orderId(), phase1.orderNo());
         } else {
-            int updated = jdbcTemplate.update(
-                    """
-                    UPDATE acct_position
-                    SET available_qty = available_qty - ?,
-                        frozen_qty = frozen_qty + ?,
-                        version = version + 1,
-                        updated_at = NOW()
-                    WHERE fund_account_id = ? AND security_id = ? AND available_qty >= ?
-                    """,
-                    quantity, quantity, fundAccountId, securityId, quantity
-            );
-            if (updated == 0) {
-                throw new IllegalArgumentException("可卖持仓不足");
-            }
-            frozenQty = quantity;
+            applyLocalOrderExchangeAcceptance(phase1.dispatchId(), phase1.orderId(), phase1.orderNo());
         }
-
-        long orderId = nextId();
-        String orderNo = "OD" + LocalDate.now().format(DATE_FMT) + String.format("%06d", orderId % 1000000);
-        jdbcTemplate.update(
-                """
-                INSERT INTO trd_order
-                (id, order_no, customer_id, fund_account_id, shareholder_account_id, security_id, market_code,
-                 security_code, security_name_snapshot, trade_direction, order_price, order_qty, order_amount,
-                 filled_qty, filled_amount, avg_fill_price, frozen_cash, frozen_qty, order_status, risk_check_result,
-                 dispatch_status, source_type, created_by, created_at, updated_at, version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, 'INIT', 'PASS', 'WAIT', ?, ?, NOW(), NOW(), 0)
-                """,
-                orderId, orderNo, customerId, fundAccountId, shareholderAccountId, securityId, marketCode,
-                securityCode, securityName, direction, price, quantity, orderAmount, frozenCash, frozenQty,
-                sourceType, operatorId
-        );
-
-        long dispatchId = nextId();
-        String dispatchNo = "DP" + LocalDate.now().format(DATE_FMT) + String.format("%06d", dispatchId % 1000000);
-        jdbcTemplate.update(
-                """
-                INSERT INTO rpt_order_dispatch
-                (id, dispatch_no, order_id, dispatch_type, request_seq_no, request_payload, dispatch_status, sent_at, reply_deadline, created_at)
-                VALUES (?, ?, ?, 'ORDER', ?, ?, 'SENT', NOW(), DATE_ADD(NOW(), INTERVAL 30 SECOND), NOW())
-                """,
-                dispatchId, dispatchNo, orderId, requestSeqNo.trim(), buildOrderRequestPayload(marketCode, securityCode, direction, price, quantity)
-        );
-
-        long replyId = nextId();
-        String replyNo = "RP" + LocalDate.now().format(DATE_FMT) + String.format("%06d", replyId % 1000000);
-        jdbcTemplate.update(
-                """
-                INSERT INTO rpt_order_reply
-                (id, reply_no, dispatch_id, order_id, cancel_request_id, reply_type, external_order_no, external_trade_no,
-                 accept_code, accept_message, reply_payload, received_at)
-                VALUES (?, ?, ?, ?, NULL, 'ORDER_ACCEPT', ?, NULL, '0', '受理成功', ?, NOW())
-                """,
-                replyId, replyNo, dispatchId, orderId, "EX" + orderNo, "{\"result\":\"ACCEPTED\"}"
-        );
-
-        jdbcTemplate.update("UPDATE rpt_order_dispatch SET dispatch_status = 'ACCEPTED' WHERE id = ?", dispatchId);
-        jdbcTemplate.update("UPDATE trd_order SET order_status = 'REPORTED', dispatch_status = 'ACCEPTED', updated_at = NOW() WHERE id = ?", orderId);
 
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("orderId", orderId);
-        data.put("orderNo", orderNo);
+        data.put("orderId", phase1.orderId());
+        data.put("orderNo", phase1.orderNo());
         data.put("orderStatus", "REPORTED");
-        data.put("dispatchNo", dispatchNo);
-        data.put("fundAccountNo", fundAccountNo);
-        data.put("frozenCash", frozenCash);
-        data.put("frozenQty", frozenQty);
+        data.put("dispatchNo", phase1.dispatchNo());
+        data.put("fundAccountNo", phase1.fundAccountNo());
+        data.put("frozenCash", phase1.frozenCash());
+        data.put("frozenQty", phase1.frozenQty());
         data.put("idempotent", false);
         return data;
     }
@@ -938,8 +876,11 @@ public class TradeController {
                 """
                 SELECT o.id, o.order_no, o.customer_id, o.fund_account_id, o.security_id, o.market_code, o.security_code,
                        o.trade_direction, o.order_price, o.order_qty, o.filled_qty, o.filled_amount, o.avg_fill_price,
-                       o.frozen_cash, o.frozen_qty, o.order_status, o.source_type
+                       o.frozen_cash, o.frozen_qty, o.order_status, o.source_type,
+                       cc.acct_cls_code, s.security_type, s.lot_size
                 FROM trd_order o
+                JOIN cust_customer cc ON cc.id = o.customer_id
+                JOIN md_security s ON s.id = o.security_id
                 WHERE o.order_no = ?
                 LIMIT 1
                 """,
@@ -970,7 +911,7 @@ public class TradeController {
         if (orderPrice == null || orderPrice.compareTo(BigDecimal.ZERO) <= 0) {
             throw new IllegalArgumentException("委托价格异常");
         }
-        // 限价委托与成交价关系（模拟成交 / 手工回报共用）
+        // 限价委托与成交价：买不能高于委托价（不能比限价买得更贵），卖不能低于委托价（不能比限价卖得更便宜）
         if ("B".equalsIgnoreCase(direction)) {
             if (fillPrice.compareTo(orderPrice) > 0) {
                 throw new IllegalArgumentException("买入限价委托：成交价不能高于委托价");
@@ -981,14 +922,7 @@ public class TradeController {
             }
         }
 
-        Map<String, Object> sec = queryOne(
-                "SELECT lot_size FROM md_security WHERE id = ? LIMIT 1",
-                securityId
-        );
-        if (sec == null) {
-            throw new IllegalArgumentException("证券主数据缺失");
-        }
-        int lotSize = ((Number) sec.get("lot_size")).intValue();
+        int lotSize = ((Number) order.get("lot_size")).intValue();
         if (lotSize > 0 && fillQty % lotSize != 0) {
             throw new IllegalArgumentException("成交数量须满足最小交易单位");
         }
@@ -999,9 +933,20 @@ public class TradeController {
             filledAmountBefore = BigDecimal.ZERO;
         }
 
-        BigDecimal commRate = DEFAULT_COMM_RATE;
-        BigDecimal stampRate = "S".equalsIgnoreCase(direction) ? DEFAULT_STAMP_SELL_RATE : BigDecimal.ZERO;
-        BigDecimal feeComm = fillValue.multiply(commRate).setScale(4, RoundingMode.HALF_UP);
+        String acctClsCode = asString(order.get("acct_cls_code"));
+        if (isBlank(acctClsCode)) {
+            acctClsCode = "NORMAL";
+        }
+        String securityType = asString(order.get("security_type"));
+        if (isBlank(securityType)) {
+            securityType = "COMMON";
+        }
+        CommissionRule commRule = tradingFeeRuleService.loadCommission(acctClsCode, marketCode, securityType);
+        BigDecimal commRate = commRule.rate();
+        BigDecimal feeComm = tradingFeeRuleService.commissionOnTurnover(fillValue, commRule);
+        BigDecimal stampRate = "S".equalsIgnoreCase(direction)
+                ? tradingFeeRuleService.loadSellStampRate(marketCode, securityType)
+                : BigDecimal.ZERO;
         BigDecimal feeStamp = fillValue.multiply(stampRate).setScale(4, RoundingMode.HALF_UP);
         BigDecimal feeOther = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
         BigDecimal feeTotal = feeComm.add(feeStamp).add(feeOther);
@@ -1021,12 +966,32 @@ public class TradeController {
         BigDecimal availBefore = nz(asDecimal(fundBefore.get("available_balance")));
 
         if ("B".equalsIgnoreCase(direction)) {
-            BigDecimal lockChunk = orderPrice.multiply(BigDecimal.valueOf(fillQty)).setScale(4, RoundingMode.HALF_UP);
-            BigDecimal frozenCash = nz(asDecimal(order.get("frozen_cash")));
-            if (lockChunk.compareTo(frozenCash) > 0) {
+            BigDecimal remainingOrderFrozen = nz(asDecimal(order.get("frozen_cash")));
+            BigDecimal principalRelease = orderPrice.multiply(BigDecimal.valueOf(fillQty)).setScale(4, RoundingMode.HALF_UP);
+            BigDecimal fullPrincipal = orderPrice.multiply(BigDecimal.valueOf(orderQty)).setScale(4, RoundingMode.HALF_UP);
+            CommissionRule commRuleForRelease = tradingFeeRuleService.loadCommission(acctClsCode, marketCode, securityType);
+            BigDecimal fullEstComm = tradingFeeRuleService.commissionOnTurnover(fullPrincipal, commRuleForRelease);
+            BigDecimal fullEstStampBuy = tradingFeeRuleService.buyStampOnTurnover(fullPrincipal, marketCode, securityType);
+            BigDecimal feeReserveFull = fullEstComm.add(fullEstStampBuy).setScale(4, RoundingMode.HALF_UP);
+            BigDecimal feeRelease = BigDecimal.ZERO;
+            if (orderQty > 0 && feeReserveFull.compareTo(BigDecimal.ZERO) > 0) {
+                feeRelease = feeReserveFull.multiply(BigDecimal.valueOf(fillQty))
+                        .divide(BigDecimal.valueOf(orderQty), 4, RoundingMode.HALF_UP);
+            }
+            boolean finalFill = fillQty == remainQty;
+            BigDecimal lockChunk;
+            if (finalFill) {
+                lockChunk = remainingOrderFrozen;
+            } else {
+                lockChunk = principalRelease.add(feeRelease).setScale(4, RoundingMode.HALF_UP);
+                if (lockChunk.compareTo(remainingOrderFrozen) > 0) {
+                    lockChunk = remainingOrderFrozen;
+                }
+            }
+            if (lockChunk.compareTo(remainingOrderFrozen) > 0) {
                 throw new IllegalArgumentException("委托冻结资金不足，无法成交该数量");
             }
-            BigDecimal surplus = lockChunk.subtract(fillValue).max(BigDecimal.ZERO);
+            BigDecimal surplus = principalRelease.subtract(fillValue).max(BigDecimal.ZERO);
             if (availBefore.add(surplus).compareTo(feeTotal) < 0) {
                 throw new IllegalArgumentException("释放后可用资金不足以支付佣金与税费");
             }
@@ -1329,110 +1294,21 @@ public class TradeController {
         return v == null ? BigDecimal.ZERO : v;
     }
 
-    /**
-     * App 三 Tab 分桶：部撤 {@code PART_CANCELED} 同时含「有成交」与「有撤单」，返回 {@code COMPLETED} 与 {@code CANCELED} 两个桶。
-     */
-    private static List<String> computeOrderListBuckets(String orderStatus, long filledQty) {
-        if (orderStatus == null) {
-            return List.of("ONGOING");
-        }
-        return switch (orderStatus) {
-            case "FILLED" -> List.of("COMPLETED");
-            case "CANCELED" -> List.of("CANCELED");
-            case "PART_CANCELED" -> {
-                if (filledQty > 0L) {
-                    yield List.of("COMPLETED", "CANCELED");
-                }
-                yield List.of("CANCELED");
-            }
-            default -> List.of("ONGOING");
-        };
-    }
-
     private String buildOrderRequestPayload(String marketCode, String securityCode, String direction, BigDecimal price, Long quantity) {
         return "{\"marketCode\":\"" + marketCode + "\",\"securityCode\":\"" + securityCode + "\",\"tradeDirection\":\""
                 + direction + "\",\"price\":" + price + ",\"quantity\":" + quantity + "}";
     }
 
-    private Map<String, Object> toOrderListItem(Map<String, Object> row) {
-        long orderQty = toLong(row.get("order_qty"));
-        long filledQty = toLong(row.get("filled_qty"));
-        String status = asString(row.get("order_status"));
-        boolean terminal = "FILLED".equals(status) || "CANCELED".equals(status) || "PART_CANCELED".equals(status);
-        long remainQty = terminal ? 0L : Math.max(0L, orderQty - filledQty);
-        String lastCancelStatus = asString(row.get("last_cancel_status"));
-        boolean canceling = "INIT".equals(lastCancelStatus) || "SENT".equals(lastCancelStatus);
-        boolean canCancel = ("REPORTED".equals(status) || "PART_FILLED".equals(status)) && !terminal && (orderQty - filledQty) > 0 && !canceling;
-
-        String marketCode = asString(row.get("market_code"));
-        String direction = asString(row.get("trade_direction"));
-        Map<String, Object> item = new LinkedHashMap<>();
-        item.put("id", toLong(row.get("id")));
-        item.put("orderNo", asString(row.get("order_no")));
-        item.put("sourceType", asString(row.get("source_type")));
-        item.put("customerId", toLong(row.get("customer_id")));
-        item.put("fundAccountNo", asString(row.get("fund_account_no")));
-        item.put("marketCode", marketCode);
-        item.put("market", "1".equals(marketCode) ? "SH" : "SZ");
-        item.put("securityCode", asString(row.get("security_code")));
-        item.put("securityName", asString(row.get("security_name_snapshot")));
-        item.put("tradeDirection", direction);
-        item.put("tradeDirectionText", "B".equals(direction) ? "买入" : "卖出");
-        BigDecimal orderPrice = asDecimal(row.get("order_price"));
-        item.put("orderPrice", orderPrice);
-        // 与部分移动端字段名对齐（Gson 默认映射 price / quantity，避免未配置 @SerializedName 时显示为 0）
-        item.put("price", orderPrice);
-        item.put("orderQty", orderQty);
-        item.put("quantity", orderQty);
-        item.put("filledQty", filledQty);
-        item.put("remainQty", remainQty);
-        item.put("orderStatus", status);
-        item.put("orderListBuckets", computeOrderListBuckets(status, filledQty));
-        item.put("createdAt", row.get("created_at"));
-        item.put("lastCancelStatus", lastCancelStatus);
-        item.put("canCancel", canCancel);
-        return item;
-    }
-
     private void ensureActiveAppUser(Long userId) {
-        Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(1) FROM app_user WHERE id = ? AND status = 'ACTIVE'",
-                Integer.class,
-                userId
-        );
-        if (count == null || count == 0) {
-            throw new IllegalArgumentException("登录态失效");
-        }
+        businessQueryService.ensureActiveAppUser(userId);
     }
 
     private Long findLatestOpenedCustomerByUser(Long userId) {
-        List<Long> list = jdbcTemplate.queryForList(
-                """
-                SELECT ir.created_customer_id
-                FROM cust_open_apply oa
-                JOIN cust_import_record ir ON ir.record_no = oa.apply_no
-                WHERE oa.user_id = ?
-                  AND ir.review_status = 'OPENED'
-                  AND ir.created_customer_id IS NOT NULL
-                ORDER BY oa.updated_at DESC
-                LIMIT 1
-                """,
-                Long.class,
-                userId
-        );
-        return list.isEmpty() ? null : list.get(0);
+        return businessQueryService.findLatestOpenedCustomerByUser(userId);
     }
 
     private Long requireOperatorId(String token) {
-        List<Long> operatorIds = jdbcTemplate.queryForList(
-                "SELECT operator_id FROM op_login_session WHERE token = ? AND expire_at > NOW() LIMIT 1",
-                Long.class,
-                token
-        );
-        if (operatorIds.isEmpty()) {
-            throw new IllegalArgumentException("登录已过期，请重新登录");
-        }
-        return operatorIds.get(0);
+        return businessQueryService.requireOperatorId(token);
     }
 
     private Map<String, Object> queryOne(String sql, Object... args) {

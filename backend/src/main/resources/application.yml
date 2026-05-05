@@ -28,6 +28,10 @@ spring:
         concurrency: 1
 
 financial:
+  # 独立模拟交易所（见 mock-exchange 模块）。设 base-url 后，委托报盘受理由该进程写回报；留空则保持原进程内受理。
+  mock-exchange:
+    base-url: ${MOCK_EXCHANGE_BASE_URL:}
+    shared-secret: ${MOCK_EXCHANGE_SHARED_SECRET:}
   messaging:
     enabled: ${FINANCIAL_MESSAGING_ENABLED:true}
   ratelimit:

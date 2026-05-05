@@ -35,6 +35,25 @@ function attachNetworkHint(client) {
 attachNetworkHint(http);
 attachNetworkHint(appHttp);
 
+/**
+ * 后端部分接口以 HTTP 200 + body.code!=0 表示业务失败（与 Spring 直接返回 ApiResponse 一致）。
+ * 若不转换，axios 会走成功分支，界面会误提示成功。
+ */
+function attachBizCodeReject(client) {
+  client.interceptors.response.use((r) => {
+    const d = r.data;
+    if (d != null && typeof d.code === "number" && d.code !== 0) {
+      const err = new Error(d.message || "业务失败");
+      err.response = { data: d };
+      return Promise.reject(err);
+    }
+    return r;
+  });
+}
+
+attachBizCodeReject(http);
+attachBizCodeReject(appHttp);
+
 http.interceptors.request.use((config) => {
   const token = localStorage.getItem("op_token");
   if (token) {

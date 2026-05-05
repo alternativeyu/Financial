@@ -1491,6 +1491,28 @@ async function simulateMatchForOrder(item) {
     message.value = "价格无效";
     return;
   }
+  const orderPrice = Number(item.orderPrice);
+  if (!Number.isFinite(orderPrice) || orderPrice <= 0) {
+    message.value = "委托价格异常，无法校验限价";
+    return;
+  }
+  const dir = String(item.tradeDirection ?? "").toUpperCase();
+  const buy =
+    dir === "B" ||
+    dir === "BUY" ||
+    (item.tradeDirectionText && String(item.tradeDirectionText).includes("买"));
+  const sell =
+    dir === "S" ||
+    dir === "SELL" ||
+    (item.tradeDirectionText && String(item.tradeDirectionText).includes("卖"));
+  if (buy && fillPrice > orderPrice) {
+    message.value = "买入限价委托：成交价不能高于委托价";
+    return;
+  }
+  if (sell && fillPrice < orderPrice) {
+    message.value = "卖出限价委托：成交价不能低于委托价";
+    return;
+  }
   const requestSeqNo = `OPEXEC_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
   try {
     await simulateOperatorTradeMatch(item.orderNo, {

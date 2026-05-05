@@ -1,0 +1,17 @@
+# 独立模拟交易所进程：与 operator-backend 共用库 financial_trading
+server:
+  port: ${MOCK_EXCHANGE_PORT:28482}
+
+spring:
+  application:
+    name: mock-exchange
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/financial_trading?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: lyb050527
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+# 与 backend 的 financial.mock-exchange.shared-secret 对齐；空表示不校验（仅本机联调）
+financial:
+  mock-exchange:
+    shared-secret: ${MOCK_EXCHANGE_SHARED_SECRET:}

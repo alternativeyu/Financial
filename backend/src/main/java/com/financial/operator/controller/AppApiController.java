@@ -4,6 +4,8 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import com.financial.operator.infra.cache.AppMarketQuoteQueryService;
+import com.financial.operator.service.TradingFeeRuleService;
+import com.financial.operator.service.TradingFeeRuleService.CommissionRule;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,10 +38,16 @@ public class AppApiController {
 
     private final JdbcTemplate jdbcTemplate;
     private final AppMarketQuoteQueryService marketQuoteQueryService;
+    private final TradingFeeRuleService tradingFeeRuleService;
 
-    public AppApiController(JdbcTemplate jdbcTemplate, AppMarketQuoteQueryService marketQuoteQueryService) {
+    public AppApiController(
+            JdbcTemplate jdbcTemplate,
+            AppMarketQuoteQueryService marketQuoteQueryService,
+            TradingFeeRuleService tradingFeeRuleService
+    ) {
         this.jdbcTemplate = jdbcTemplate;
         this.marketQuoteQueryService = marketQuoteQueryService;
+        this.tradingFeeRuleService = tradingFeeRuleService;
     }
 
     @PostMapping("/auth/register")
@@ -415,7 +423,7 @@ public class AppApiController {
         String securityCodeNorm = request.securityCode().trim();
         List<Map<String, Object>> securityRows = jdbcTemplate.queryForList(
                 """
-                SELECT id, lot_size, listed_status
+                SELECT id, lot_size, listed_status, security_type
                 FROM md_security
                 WHERE market_code = ? AND security_code = ?
                 LIMIT 1
@@ -458,12 +466,27 @@ public class AppApiController {
             }
         }
 
+        List<String> acctClsRows = jdbcTemplate.queryForList(
+                "SELECT acct_cls_code FROM cust_customer WHERE id = ? LIMIT 1",
+                String.class,
+                customerId
+        );
+        String acctClsCode = acctClsRows.isEmpty() || isBlank(acctClsRows.get(0)) ? "NORMAL" : acctClsRows.get(0).trim();
+        String securityType = asString(security.get("security_type"));
+        if (isBlank(securityType)) {
+            securityType = "COMMON";
+        }
+
         String direction = request.tradeDirection().toUpperCase();
         if ("BUY".equals(direction) || "B".equals(direction)) {
             BigDecimal available = (BigDecimal) fund.get("available_balance");
-            BigDecimal need = request.price().multiply(BigDecimal.valueOf(request.quantity()));
+            BigDecimal turnover = request.price().multiply(BigDecimal.valueOf(request.quantity())).setScale(4, RoundingMode.HALF_UP);
+            CommissionRule commRule = tradingFeeRuleService.loadCommission(acctClsCode, marketCodeNorm, securityType);
+            BigDecimal estComm = tradingFeeRuleService.commissionOnTurnover(turnover, commRule);
+            BigDecimal estStampBuy = tradingFeeRuleService.buyStampOnTurnover(turnover, marketCodeNorm, securityType);
+            BigDecimal need = turnover.add(estComm).add(estStampBuy).setScale(4, RoundingMode.HALF_UP);
             if (available == null || available.compareTo(need) < 0) {
-                addViolation(violations, "INSUFFICIENT_CASH", "可用资金不足");
+                addViolation(violations, "INSUFFICIENT_CASH", "可用资金不足（含预估佣金/税费）");
             }
         } else if ("SELL".equals(direction) || "S".equals(direction)) {
             List<Map<String, Object>> positionRows = jdbcTemplate.queryForList(
