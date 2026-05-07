@@ -5,6 +5,21 @@
 *.swp
 *.swo
 
+# Claude / Cursor 本机权限与路径（勿提交）
+.claude/
+
+# Python（行情同步脚本等）
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+**/venv/
+**/.venv/
+
 # Java / Maven
 backend/target/
 gateway/target/
@@ -29,3 +44,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# 文档工具链临时抽取（可由脚本再生成）
+docs/*_extract.txt

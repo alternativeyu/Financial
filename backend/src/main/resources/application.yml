@@ -5,10 +5,18 @@ server:
 spring:
   application:
     name: operator-backend
+  profiles:
+    # 未指定 --spring.profiles.active 时使用本地组合（含 nomq，无 Rabbit 自动配置）
+    default:
+      - local
+    group:
+      # 本地开发：含 nomq（排除 Rabbit 自动配置），见 application-local.yml
+      local:
+        - nomq
   datasource:
     url: jdbc:mysql://127.0.0.1:3306/financial_trading?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: root
-    password: 20050226
+    username: ${SPRING_DATASOURCE_USERNAME:root}
+    password: ${SPRING_DATASOURCE_PASSWORD:lyb050527}
     driver-class-name: com.mysql.cj.jdbc.Driver
   data:
     redis:

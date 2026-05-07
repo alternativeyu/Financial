@@ -1,0 +1,4 @@
+# 生产 / 完整联调：显式启用，例如 --spring.profiles.active=prod
+# 此时不会应用 spring.profiles.default 中的 local，RabbitMQ 等按 application.yml 与环境变量生效。
+# 示例：FINANCIAL_MESSAGING_ENABLED=true、SPRING_DATASOURCE_*、REDIS_*、RABBITMQ_*
+

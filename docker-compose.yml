@@ -1,5 +1,6 @@
-# 设计文档：Redis（行情/字典缓存、限流）、RabbitMQ（异步通知与清算审计）
+# 设计文档：Redis（行情/字典缓存、限流）、RabbitMQ（异步通知与清算审计）、MySQL（与 backend application.yml 默认 root 密码一致）
 # 用法：在仓库根目录执行 docker compose up -d
+# 首次启动 MySQL 会执行 ./mysql_financial_trading_schema.sql 初始化库表（仅空数据目录时执行一次）。
 services:
   redis:
     image: redis:7-alpine
@@ -15,3 +16,20 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
+
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: "20050226"
+      MYSQL_DATABASE: financial_trading
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_financial_data:/var/lib/mysql
+      - ./mysql_financial_trading_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+
+volumes:
+  mysql_financial_data:

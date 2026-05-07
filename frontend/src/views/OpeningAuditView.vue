@@ -1068,21 +1068,21 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in reportOrderList" :key="row.order_no">
-              <td><span class="cell-ellipsis mono" :title="row.order_no">{{ row.order_no }}</span></td>
-              <td><span class="cell-ellipsis">{{ row.customer_code || '-' }}</span></td>
-              <td><span class="cell-ellipsis mono">{{ row.fund_account_no || '-' }}</span></td>
-              <td>{{ row.market_code === 'SH' ? '沪A' : row.market_code === 'SZ' ? '深A' : (row.market_code || '-') }}</td>
-              <td class="mono">{{ row.security_code }}</td>
-              <td>{{ row.trade_direction === 'B' ? '买入' : '卖出' }}</td>
-              <td class="mono">{{ row.order_price }}</td>
-              <td>{{ formatInteger(row.order_qty) }}</td>
-              <td>{{ formatInteger(row.filled_qty) }}</td>
-              <td>{{ row.order_status }}</td>
-              <td>{{ row.source_type }}</td>
-              <td style="white-space:nowrap;font-size:12px">{{ formatQuoteTime(row.created_at) }}</td>
+            <tr v-for="row in reportOrderList" :key="row.orderNo || row.id">
+              <td><span class="cell-ellipsis mono" :title="row.orderNo">{{ row.orderNo }}</span></td>
+              <td><span class="cell-ellipsis">{{ row.customerCode || '-' }}</span></td>
+              <td><span class="cell-ellipsis mono">{{ row.fundAccountNo || '-' }}</span></td>
+              <td>{{ row.market === 'SH' ? '沪A' : row.market === 'SZ' ? '深A' : (row.marketCode === '1' ? '沪A' : row.marketCode === '0' ? '深A' : '-') }}</td>
+              <td class="mono">{{ row.securityCode }}</td>
+              <td>{{ row.tradeDirection === 'B' ? '买入' : row.tradeDirection === 'S' ? '卖出' : '-' }}</td>
+              <td class="mono">{{ row.orderPrice }}</td>
+              <td>{{ formatInteger(row.orderQty) }}</td>
+              <td>{{ formatInteger(row.filledQty) }}</td>
+              <td>{{ row.orderStatus }}</td>
+              <td>{{ row.sourceType }}</td>
+              <td style="white-space:nowrap;font-size:12px">{{ formatQuoteTime(row.createdAt) }}</td>
             </tr>
-            <tr v-if="!reportOrderList.length"><td colspan="12" class="empty-row">暂无记录</td></tr>
+            <tr v-if="!reportOrderList.length"><td colspan="12" class="empty-row">暂无委托</td></tr>
           </tbody>
         </table>
         <div class="pagination-row" v-if="reportOrderTotal > reportOrderPageSize">
@@ -1138,7 +1138,10 @@
       <template v-if="reportTab === 'asset-journal'">
         <div class="filter-row">
           <input v-model="reportJournalFilter.customerCode" placeholder="客户代码" style="width:120px" />
+          <input v-model="reportJournalFilter.idNo" placeholder="证件号" style="width:160px" />
           <input v-model="reportJournalFilter.fundAccountNo" placeholder="资金账户" style="width:150px" />
+          <input v-model="reportJournalFilter.orderNo" placeholder="委托编号" style="width:150px" />
+          <input v-model="reportJournalFilter.tradeNo" placeholder="成交编号" style="width:150px" />
           <input v-model="reportJournalFilter.journalDateFrom" type="date" style="width:140px" />
           <span style="padding:0 4px;color:#888">至</span>
           <input v-model="reportJournalFilter.journalDateTo" type="date" style="width:140px" />
@@ -1155,15 +1158,15 @@
             <tr v-for="row in reportJournalList" :key="row.journal_no">
               <td><span class="cell-ellipsis mono" :title="row.journal_no">{{ row.journal_no }}</span></td>
               <td><span class="cell-ellipsis mono">{{ row.fund_account_no || '-' }}</span></td>
-              <td>{{ row.journal_type }}</td>
-              <td class="mono">{{ row.amount }}</td>
-              <td class="mono">{{ row.balance_before }}</td>
-              <td class="mono">{{ row.balance_after }}</td>
-              <td><span class="cell-ellipsis mono">{{ row.order_no || '-' }}</span></td>
-              <td><span class="cell-ellipsis mono">{{ row.trade_no || '-' }}</span></td>
-              <td style="white-space:nowrap;font-size:12px">{{ formatQuoteTime(row.created_at) }}</td>
+              <td><span class="cell-ellipsis" :title="journalTypeTitle(row)">{{ journalTypeLabel(row) }}</span></td>
+              <td class="mono">{{ row.change_amount }}</td>
+              <td class="mono">{{ row.before_amount }}</td>
+              <td class="mono">{{ row.after_amount }}</td>
+              <td><span class="cell-ellipsis mono">{{ journalRefOrderCell(row) }}</span></td>
+              <td><span class="cell-ellipsis mono">{{ journalRefTradeCell(row) }}</span></td>
+              <td style="white-space:nowrap;font-size:12px">{{ formatQuoteTime(row.occur_time) }}</td>
             </tr>
-            <tr v-if="!reportJournalList.length"><td colspan="9" class="empty-row">暂无记录</td></tr>
+            <tr v-if="!reportJournalList.length"><td colspan="9" class="empty-row">暂无资产流水</td></tr>
           </tbody>
         </table>
         <div class="pagination-row" v-if="reportJournalTotal > reportJournalPageSize">
@@ -1213,6 +1216,8 @@
       <template v-if="reportTab === 'fee-details'">
         <div class="filter-row">
           <input v-model="reportFeeFilter.customerCode" placeholder="客户代码" style="width:120px" />
+          <input v-model="reportFeeFilter.idNo" placeholder="证件号" style="width:160px" />
+          <input v-model="reportFeeFilter.fundAccountNo" placeholder="资金账户" style="width:150px" />
           <input v-model="reportFeeFilter.orderNo" placeholder="委托编号" style="width:160px" />
           <input v-model="reportFeeFilter.tradeNo" placeholder="成交编号" style="width:160px" />
           <button @click="searchReportFees">查询</button>
@@ -1220,7 +1225,7 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th>成交编号</th><th>委托编号</th><th>费用类型</th><th>费用金额</th><th>成交额</th><th>费率</th><th>时间</th>
+              <th>成交编号</th><th>委托编号</th><th>费用类型</th><th>费用金额</th><th>计费基数</th><th>费率</th><th>时间</th>
             </tr>
           </thead>
           <tbody>
@@ -1229,11 +1234,11 @@
               <td><span class="cell-ellipsis mono" :title="row.order_no">{{ row.order_no || '-' }}</span></td>
               <td>{{ row.fee_type }}</td>
               <td class="mono">{{ row.fee_amount }}</td>
-              <td class="mono">{{ row.trade_amount }}</td>
+              <td class="mono">{{ row.calc_base }}</td>
               <td class="mono">{{ row.fee_rate }}</td>
               <td style="white-space:nowrap;font-size:12px">{{ formatQuoteTime(row.created_at) }}</td>
             </tr>
-            <tr v-if="!reportFeeList.length"><td colspan="7" class="empty-row">暂无记录</td></tr>
+            <tr v-if="!reportFeeList.length"><td colspan="7" class="empty-row">暂无费用明细</td></tr>
           </tbody>
         </table>
       </template>
@@ -1374,7 +1379,15 @@ const reportTradeList = ref([]);
 const reportTradeTotal = ref(0);
 const reportTradePage = ref(1);
 const reportTradePageSize = ref(20);
-const reportJournalFilter = ref({ customerCode: "", fundAccountNo: "", journalDateFrom: "", journalDateTo: "" });
+const reportJournalFilter = ref({
+  customerCode: "",
+  idNo: "",
+  fundAccountNo: "",
+  orderNo: "",
+  tradeNo: "",
+  journalDateFrom: "",
+  journalDateTo: ""
+});
 const reportJournalList = ref([]);
 const reportJournalTotal = ref(0);
 const reportJournalPage = ref(1);
@@ -1384,7 +1397,7 @@ const reportLogList = ref([]);
 const reportLogTotal = ref(0);
 const reportLogPage = ref(1);
 const reportLogPageSize = ref(20);
-const reportFeeFilter = ref({ customerCode: "", orderNo: "", tradeNo: "" });
+const reportFeeFilter = ref({ customerCode: "", idNo: "", fundAccountNo: "", orderNo: "", tradeNo: "" });
 const reportFeeList = ref([]);
 
 const marketFilter = ref("");
@@ -1426,8 +1439,7 @@ const navItems = [
   { key: "order-center", label: "委托管理" },
   { key: "risk-center", label: "风控中心" },
   { key: "report-center", label: "报表中心" },
-  { key: "market-center", label: "行情中心" },
-  { key: "system-config", label: "系统设置" }
+  { key: "market-center", label: "行情中心" }
 ];
 
 const submittedStatuses = ["SUBMITTED"];
@@ -1477,7 +1489,6 @@ function navIcon(key) {
     "risk-center":     '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
     "report-center":   '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
     "market-center":   '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
-    "system-config":   '<circle cx="12" cy="12" r="3"/><path d="M10.3 4.3c.4-1.8 2.9-1.8 3.4 0a1.72 1.72 0 0 0 2.57 1.07c1.54-.94 3.31.83 2.37 2.37A1.72 1.72 0 0 0 19.7 10c1.76.43 1.76 2.93 0 3.36a1.72 1.72 0 0 0-1.07 2.57c.94 1.54-.83 3.31-2.37 2.37A1.72 1.72 0 0 0 13.7 19.7c-.43 1.76-2.93 1.76-3.36 0a1.72 1.72 0 0 0-2.57-1.07c-1.54.94-3.31-.83-2.37-2.37A1.72 1.72 0 0 0 4.3 14c-1.76-.43-1.76-2.93 0-3.36A1.72 1.72 0 0 0 5.37 8.07c-.94-1.54.83-3.31 2.37-2.37A1.72 1.72 0 0 0 10.3 4.3z"/>',
   };
   return m[key] ?? '<circle cx="12" cy="12" r="10"/>';
 }
@@ -1859,6 +1870,35 @@ function formatDatetime(val) {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function trimStr(v) {
+  return v == null ? "" : String(v).trim();
+}
+
+/** 资产流水：后端 acct_asset_journal 字段 */
+function journalTypeLabel(row) {
+  const a = trimStr(row.asset_type);
+  const c = trimStr(row.change_type);
+  if (a && c) return `${a} / ${c}`;
+  return a || c || "-";
+}
+
+function journalTypeTitle(row) {
+  const r = trimStr(row.remark);
+  return r || journalTypeLabel(row);
+}
+
+function journalRefOrderCell(row) {
+  const t = (row.ref_type || "").toString().toUpperCase();
+  if (t === "ORDER") return row.ref_no || "-";
+  return "-";
+}
+
+function journalRefTradeCell(row) {
+  const t = (row.ref_type || "").toString().toUpperCase();
+  if (t === "TRADE") return row.ref_no || "-";
+  return "-";
+}
+
 // ── 报表中心函数 ──────────────────────────────────────────────────────────
 async function loadReportSummary() {
   try {
@@ -1870,6 +1910,7 @@ async function loadReportSummary() {
 
 function switchReportTab(tab) {
   reportTab.value = tab;
+  reportMessage.value = "";
   if (tab === "orders") loadReportOrders();
   else if (tab === "trades") loadReportTrades();
   else if (tab === "asset-journal") loadReportJournal();
@@ -1890,6 +1931,8 @@ async function loadReportOrders() {
     reportOrderList.value = data.list || [];
     reportOrderTotal.value = Number(data.total ?? 0);
   } catch (e) {
+    reportOrderList.value = [];
+    reportOrderTotal.value = 0;
     reportMessage.value = e?.response?.data?.message || e.message || "查询委托失败";
   }
 }
@@ -1915,17 +1958,36 @@ async function loadReportTrades() {
 function searchReportTrades() { reportTradePage.value = 1; loadReportTrades(); }
 
 async function loadReportJournal() {
+  const f = reportJournalFilter.value;
+  const hasScope =
+    trimStr(f.customerCode) ||
+    trimStr(f.idNo) ||
+    trimStr(f.fundAccountNo) ||
+    trimStr(f.orderNo) ||
+    trimStr(f.tradeNo);
+  if (!hasScope) {
+    reportJournalList.value = [];
+    reportJournalTotal.value = 0;
+    reportMessage.value =
+      "请至少填写「客户代码」「证件号」「资金账户」「委托编号」或「成交编号」之一，再点击查询。";
+    return;
+  }
   try {
-    const f = reportJournalFilter.value;
     const params = { page: reportJournalPage.value, pageSize: reportJournalPageSize.value };
-    if (f.customerCode) params.customerCode = f.customerCode;
-    if (f.fundAccountNo) params.fundAccountNo = f.fundAccountNo;
+    if (trimStr(f.customerCode)) params.customerCode = trimStr(f.customerCode);
+    if (trimStr(f.idNo)) params.idNo = trimStr(f.idNo);
+    if (trimStr(f.fundAccountNo)) params.fundAccountNo = trimStr(f.fundAccountNo);
+    if (trimStr(f.orderNo)) params.orderNo = trimStr(f.orderNo);
+    if (trimStr(f.tradeNo)) params.tradeNo = trimStr(f.tradeNo);
     if (f.journalDateFrom) params.journalDateFrom = f.journalDateFrom;
     if (f.journalDateTo) params.journalDateTo = f.journalDateTo;
     const data = await listReportAssetJournal(params);
     reportJournalList.value = data.list || [];
     reportJournalTotal.value = Number(data.total ?? 0);
+    reportMessage.value = "";
   } catch (e) {
+    reportJournalList.value = [];
+    reportJournalTotal.value = 0;
     reportMessage.value = e?.response?.data?.message || e.message || "查询资产流水失败";
   }
 }
@@ -1951,14 +2013,30 @@ async function loadReportLogs() {
 function searchReportLogs() { reportLogPage.value = 1; loadReportLogs(); }
 
 async function loadReportFees() {
+  const f = reportFeeFilter.value;
+  const hasScope =
+    trimStr(f.customerCode) ||
+    trimStr(f.idNo) ||
+    trimStr(f.fundAccountNo) ||
+    trimStr(f.orderNo) ||
+    trimStr(f.tradeNo);
+  if (!hasScope) {
+    reportFeeList.value = [];
+    reportMessage.value =
+      "请至少填写「客户代码」「证件号」「资金账户」「委托编号」或「成交编号」之一，再点击查询。";
+    return;
+  }
   try {
-    const f = reportFeeFilter.value;
     const params = {};
-    if (f.customerCode) params.customerCode = f.customerCode;
-    if (f.orderNo) params.orderNo = f.orderNo;
-    if (f.tradeNo) params.tradeNo = f.tradeNo;
+    if (trimStr(f.customerCode)) params.customerCode = trimStr(f.customerCode);
+    if (trimStr(f.idNo)) params.idNo = trimStr(f.idNo);
+    if (trimStr(f.fundAccountNo)) params.fundAccountNo = trimStr(f.fundAccountNo);
+    if (trimStr(f.orderNo)) params.orderNo = trimStr(f.orderNo);
+    if (trimStr(f.tradeNo)) params.tradeNo = trimStr(f.tradeNo);
     reportFeeList.value = await listReportFeeDetails(params);
+    reportMessage.value = "";
   } catch (e) {
+    reportFeeList.value = [];
     reportMessage.value = e?.response?.data?.message || e.message || "查询费用明细失败";
   }
 }

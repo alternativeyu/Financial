@@ -1,0 +1,17 @@
+# 本地开发：默认已启用（application.yml 的 spring.profiles.default）；也可用 --spring.profiles.active=local
+# 已包含 profile「nomq」（无 RabbitMQ 自动配置，见 application-nomq.yml）。
+# 仍需要：MySQL（库 financial_trading）。Redis 可选（缓存已用 simple；下单限流无 Redis 时放行）。
+# 本机 MySQL 默认密码见下；若与你不一致请改此处或设 SPRING_DATASOURCE_PASSWORD（例如 compose 内 MySQL 为 20050226）。
+spring:
+  datasource:
+    password: ${SPRING_DATASOURCE_PASSWORD:lyb050527}
+  # 无 Redis 时行情/字典仍可用进程内缓存；生产请用 redis
+  cache:
+    type: simple
+
+management:
+  health:
+    rabbit:
+      enabled: false
+    redis:
+      enabled: false

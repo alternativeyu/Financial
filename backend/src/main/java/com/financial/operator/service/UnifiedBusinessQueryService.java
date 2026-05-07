@@ -130,6 +130,7 @@ public class UnifiedBusinessQueryService {
                   o.order_no,
                   o.source_type,
                   o.customer_id,
+                  cc.customer_code,
                   fa.fund_account_no,
                   o.market_code,
                   o.security_code,
@@ -142,6 +143,7 @@ public class UnifiedBusinessQueryService {
                   o.created_at,
                   c.cancel_status AS last_cancel_status
                 FROM trd_order o
+                LEFT JOIN cust_customer cc ON cc.id = o.customer_id
                 LEFT JOIN acct_fund_account fa ON fa.id = o.fund_account_id
                 LEFT JOIN trd_cancel_request c
                   ON c.order_id = o.id
@@ -209,6 +211,7 @@ public class UnifiedBusinessQueryService {
                   o.order_no,
                   o.source_type,
                   o.customer_id,
+                  cc.customer_code,
                   fa.fund_account_no,
                   o.market_code,
                   o.security_code,
@@ -221,6 +224,7 @@ public class UnifiedBusinessQueryService {
                   o.created_at,
                   c.cancel_status AS last_cancel_status
                 FROM trd_order o
+                LEFT JOIN cust_customer cc ON cc.id = o.customer_id
                 LEFT JOIN acct_fund_account fa ON fa.id = o.fund_account_id
                 LEFT JOIN trd_cancel_request c
                   ON c.order_id = o.id
@@ -507,6 +511,7 @@ public class UnifiedBusinessQueryService {
                   o.order_no,
                   o.source_type,
                   o.customer_id,
+                  cc.customer_code,
                   fa.fund_account_no,
                   o.market_code,
                   o.security_code,
@@ -519,6 +524,7 @@ public class UnifiedBusinessQueryService {
                   o.created_at,
                   c.cancel_status AS last_cancel_status
                 FROM trd_order o
+                LEFT JOIN cust_customer cc ON cc.id = o.customer_id
                 LEFT JOIN acct_fund_account fa ON fa.id = o.fund_account_id
                 LEFT JOIN trd_cancel_request c
                   ON c.order_id = o.id
@@ -600,7 +606,7 @@ public class UnifiedBusinessQueryService {
         Long customerId = ctx.customerId();
         Long fundAccountId = ctx.fundAccountId();
         if (customerId == null && fundAccountId == null) {
-            throw new IllegalArgumentException("资产流水查询请至少提供 customerCode、idNo、fundAccountNo、orderNo 或 tradeNo 之一以定位客户或资金户");
+            throw new IllegalArgumentException("资产流水查询请至少提供一项定位条件：客户代码、证件号、资金账户、委托编号或成交编号。");
         }
         return pageAssetJournal(customerId, fundAccountId, filter.journalDateFrom(), filter.journalDateTo(), filter.page(), filter.pageSize());
     }
@@ -717,18 +723,26 @@ public class UnifiedBusinessQueryService {
         } else if (ctx.orderId() != null) {
             where.append(" AND f.order_id = ? ");
             args.add(ctx.orderId());
+        } else if (ctx.fundAccountId() != null) {
+            where.append(" AND (f.order_id IN (SELECT id FROM trd_order WHERE fund_account_id = ?) ");
+            args.add(ctx.fundAccountId());
+            where.append(" OR f.trade_id IN (SELECT id FROM trd_trade WHERE fund_account_id = ?)) ");
+            args.add(ctx.fundAccountId());
         } else if (ctx.customerId() != null) {
             where.append(" AND (f.order_id IN (SELECT id FROM trd_order WHERE customer_id = ?) ");
             args.add(ctx.customerId());
             where.append(" OR f.trade_id IN (SELECT id FROM trd_trade WHERE customer_id = ?)) ");
             args.add(ctx.customerId());
         } else {
-            throw new IllegalArgumentException("费用明细查询请至少提供 customerCode、idNo、fundAccountNo、orderNo 或 tradeNo 之一");
+            throw new IllegalArgumentException("费用明细查询请至少提供一项定位条件：客户代码、证件号、资金账户、委托编号或成交编号。");
         }
         return jdbcTemplate.queryForList(
                 """
-                SELECT f.id, f.biz_type, f.biz_id, f.order_id, f.trade_id, f.fee_type, f.fee_amount, f.calc_base, f.fee_rate, f.created_at, f.remark
+                SELECT f.id, f.biz_type, f.biz_id, f.order_id, f.trade_id, f.fee_type, f.fee_amount, f.calc_base, f.fee_rate, f.created_at, f.remark,
+                       o.order_no, t.trade_no
                 FROM trd_fee_detail f
+                LEFT JOIN trd_order o ON o.id = f.order_id
+                LEFT JOIN trd_trade t ON t.id = f.trade_id
                 """
                         + where
                         + " ORDER BY f.created_at DESC LIMIT 500 ",
@@ -976,6 +990,7 @@ public class UnifiedBusinessQueryService {
         item.put("orderNo", asString(row.get("order_no")));
         item.put("sourceType", asString(row.get("source_type")));
         item.put("customerId", toLong(row.get("customer_id")));
+        item.put("customerCode", asString(row.get("customer_code")));
         item.put("fundAccountNo", asString(row.get("fund_account_no")));
         item.put("marketCode", marketCode);
         item.put("market", "1".equals(marketCode) ? "SH" : "SZ");
