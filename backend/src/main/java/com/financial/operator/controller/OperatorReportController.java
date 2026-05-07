@@ -200,6 +200,18 @@ public class OperatorReportController {
         }
     }
 
+    /** 报表看板：全局汇总数据（委托数、成交额、撤单数、风险事件数等）。 */
+    @GetMapping("/summary")
+    public ApiResponse<Map<String, Object>> summary(
+            @RequestHeader("X-Operator-Token") String token
+    ) {
+        try {
+            return ApiResponse.ok(queryService.getReportSummary(token));
+        } catch (IllegalArgumentException ex) {
+            return ApiResponse.fail(1001, ex.getMessage());
+        }
+    }
+
     @GetMapping("/fee-details")
     public ApiResponse<List<Map<String, Object>>> feeDetails(
             @RequestHeader("X-Operator-Token") String token,

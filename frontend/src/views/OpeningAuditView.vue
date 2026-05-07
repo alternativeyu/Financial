@@ -1,33 +1,37 @@
 <template>
-  <div class="dashboard-neo-page">
-    <div
-      class="container dashboard-neo-container"
-      :class="{ 'dashboard-order-wide': activeNav === 'order-center' }"
-    >
-    <div class="topbar card">
-      <div>
-        <div class="sys-name">FTS Operator Workbench</div>
-        <div class="sys-subtitle">开户审核中心 | 金融交易系统</div>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <div class="logo-badge">FT</div>
+        <span class="logo-text">FTS Operator</span>
       </div>
-      <div style="text-align: right;">
-        <div class="operator-tag">当前操作员：{{ operatorName }}</div>
-        <button class="secondary" @click="logout">安全退出</button>
-      </div>
-    </div>
-
-    <div class="card nav-card">
-      <div class="top-nav">
+      <nav class="sidebar-nav">
         <button
           v-for="item in navItems"
           :key="item.key"
-          class="nav-item"
+          class="s-item"
           :class="{ active: item.key === activeNav }"
           @click="onNavClick(item)"
         >
+          <svg class="s-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" v-html="navIcon(item.key)"></svg>
           {{ item.label }}
         </button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="s-avatar">{{ (operatorName || 'O')[0] }}</div>
+        <span class="s-uname">{{ operatorName }}</span>
+        <button class="s-logout" @click="logout">退出</button>
       </div>
-    </div>
+    </aside>
+    <div class="main-area">
+      <header class="page-hd">
+        <div class="page-hd-title">{{ currentNavLabel }}</div>
+        <div class="page-hd-right">
+          <span class="hd-op">{{ operatorName }}</span>
+          <button class="hd-logout" @click="logout">安全退出</button>
+        </div>
+      </header>
+      <div class="page-body">
 
     <div v-if="activeNav === 'opening-audit'" class="metrics-grid">
       <div class="metric-card">
@@ -882,6 +886,360 @@
     </div>
     <div v-if="activeNav === 'market-center' && message" class="card message">{{ message }}</div>
 
+    <!-- ── 风控中心 ─────────────────────────────────────────────────────── -->
+    <div v-if="activeNav === 'risk-center'" class="card">
+      <div class="section-head">
+        <h3 class="title">风控事件</h3>
+        <button @click="loadRiskEvents" class="secondary">刷新</button>
+      </div>
+      <div class="filter-row">
+        <select v-model="riskFilter.riskLevel">
+          <option value="">全部等级</option>
+          <option value="HIGH">HIGH 高风险</option>
+          <option value="MEDIUM">MEDIUM 中风险</option>
+          <option value="LOW">LOW 低风险</option>
+        </select>
+        <select v-model="riskFilter.eventStatus">
+          <option value="">全部状态</option>
+          <option value="OPEN">OPEN 待处理</option>
+          <option value="HANDLED">HANDLED 已确认</option>
+          <option value="IGNORED">IGNORED 已忽略</option>
+          <option value="CLOSED">CLOSED 已关闭</option>
+        </select>
+        <input v-model="riskFilter.customerCode" placeholder="客户代码" style="width:130px" />
+        <input v-model="riskFilter.from" type="date" style="width:140px" />
+        <span style="padding:0 4px;color:#888">至</span>
+        <input v-model="riskFilter.to" type="date" style="width:140px" />
+        <button @click="searchRiskEvents">搜索</button>
+      </div>
+
+      <div class="metrics-grid" style="margin-bottom:10px">
+        <div class="metric-card">
+          <div class="metric-label">待处理 OPEN</div>
+          <div class="metric-value" style="color:#e74c3c">{{ riskEventStats.open }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">阻断事件</div>
+          <div class="metric-value" style="color:#e74c3c">{{ riskEventStats.blocking }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">预警事件</div>
+          <div class="metric-value" style="color:#f39c12">{{ riskEventStats.warning }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">已处理</div>
+          <div class="metric-value" style="color:#27ae60">{{ riskEventStats.handled }}</div>
+        </div>
+      </div>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>事件号</th>
+            <th>规则</th>
+            <th>客户</th>
+            <th>风险等级</th>
+            <th>类型</th>
+            <th>触发原因</th>
+            <th>状态</th>
+            <th>时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="ev in riskEvents" :key="ev.event_no">
+            <td><span class="cell-ellipsis" :title="ev.event_no">{{ ev.event_no }}</span></td>
+            <td>
+              <span class="badge badge-gray" :title="ev.rule_name">{{ ev.rule_code }}</span>
+              <span class="cell-ellipsis" style="margin-left:4px;font-size:12px;color:#555">{{ ev.rule_name }}</span>
+            </td>
+            <td>
+              <span v-if="ev.customer_code">{{ ev.customer_code }}<br /><span style="font-size:11px;color:#888">{{ ev.customer_name }}</span></span>
+              <span v-else>-</span>
+            </td>
+            <td>
+              <span class="badge" :class="riskLevelClass(ev.risk_level)">{{ ev.risk_level }}</span>
+            </td>
+            <td>
+              <span v-if="ev.is_blocking" class="badge badge-red">阻断</span>
+              <span v-else class="badge badge-yellow">预警</span>
+            </td>
+            <td><span class="cell-ellipsis" style="max-width:200px" :title="ev.hit_message">{{ ev.hit_message }}</span></td>
+            <td>
+              <span class="badge" :class="riskStatusClass(ev.event_status)">{{ ev.event_status }}</span>
+            </td>
+            <td style="font-size:12px;white-space:nowrap">{{ formatDatetime(ev.created_at) }}</td>
+            <td>
+              <template v-if="ev.event_status === 'OPEN'">
+                <button class="secondary" style="font-size:12px;padding:2px 8px;margin-right:4px" @click="doHandleEvent(ev.event_no, 'HANDLED')">确认</button>
+                <button class="secondary" style="font-size:12px;padding:2px 8px;margin-right:4px" @click="doHandleEvent(ev.event_no, 'IGNORED')">忽略</button>
+                <button class="secondary" style="font-size:12px;padding:2px 8px" @click="doHandleEvent(ev.event_no, 'CLOSED')">关闭</button>
+              </template>
+              <span v-else style="color:#888;font-size:12px">{{ formatDatetime(ev.handled_at) || '-' }}</span>
+            </td>
+          </tr>
+          <tr v-if="!riskEvents.length">
+            <td colspan="9" class="empty-row">暂无风控事件</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="pagination-row" v-if="riskTotal > riskPageSize">
+        <button :disabled="riskPage <= 1" @click="riskPage--; loadRiskEvents()" class="secondary">上一页</button>
+        <span style="padding:0 12px">第 {{ riskPage }} 页 / 共 {{ Math.ceil(riskTotal / riskPageSize) }} 页（{{ riskTotal }} 条）</span>
+        <button :disabled="riskPage >= Math.ceil(riskTotal / riskPageSize)" @click="riskPage++; loadRiskEvents()" class="secondary">下一页</button>
+      </div>
+    </div>
+    <div v-if="activeNav === 'risk-center' && riskMessage" class="card message">{{ riskMessage }}</div>
+
+    <!-- ── 报表中心 ────────────────────────────────────────────────────── -->
+    <div v-if="activeNav === 'report-center'" class="card">
+      <div class="section-head">
+        <h3 class="title">报表看板</h3>
+        <button @click="loadReportSummary" class="secondary">刷新汇总</button>
+      </div>
+      <div class="metrics-grid" style="margin-bottom:14px">
+        <div class="metric-card">
+          <div class="metric-label">总委托数</div>
+          <div class="metric-value">{{ reportSummary.totalOrders ?? '-' }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">今日委托</div>
+          <div class="metric-value">{{ reportSummary.todayOrders ?? '-' }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">撤单数</div>
+          <div class="metric-value">{{ reportSummary.canceledOrders ?? '-' }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">总成交笔数</div>
+          <div class="metric-value">{{ reportSummary.totalTrades ?? '-' }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">今日成交额</div>
+          <div class="metric-value" style="font-size:14px">{{ reportSummary.todayTradeAmount != null ? formatMoney(reportSummary.todayTradeAmount) : '-' }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">总成交额</div>
+          <div class="metric-value" style="font-size:13px">{{ reportSummary.totalTradeAmount != null ? formatMoney(reportSummary.totalTradeAmount) : '-' }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">待处理风控</div>
+          <div class="metric-value" style="color:#e74c3c">{{ reportSummary.openRiskEvents ?? '-' }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">活跃客户数</div>
+          <div class="metric-value">{{ reportSummary.activeCustomers ?? '-' }}</div>
+        </div>
+      </div>
+
+      <div class="list-switch" style="margin-bottom:12px">
+        <button class="list-switch-item" :class="{ active: reportTab === 'orders' }" @click="switchReportTab('orders')">委托明细</button>
+        <button class="list-switch-item" :class="{ active: reportTab === 'trades' }" @click="switchReportTab('trades')">成交明细</button>
+        <button class="list-switch-item" :class="{ active: reportTab === 'asset-journal' }" @click="switchReportTab('asset-journal')">资产流水</button>
+        <button class="list-switch-item" :class="{ active: reportTab === 'operation-logs' }" @click="switchReportTab('operation-logs')">操作日志</button>
+        <button class="list-switch-item" :class="{ active: reportTab === 'fee-details' }" @click="switchReportTab('fee-details')">费用明细</button>
+      </div>
+
+      <!-- 委托明细 -->
+      <template v-if="reportTab === 'orders'">
+        <div class="filter-row">
+          <input v-model="reportOrderFilter.customerCode" placeholder="客户代码" style="width:120px" />
+          <input v-model="reportOrderFilter.orderNo" placeholder="委托编号" style="width:160px" />
+          <input v-model="reportOrderFilter.orderDateFrom" type="date" style="width:140px" />
+          <span style="padding:0 4px;color:#888">至</span>
+          <input v-model="reportOrderFilter.orderDateTo" type="date" style="width:140px" />
+          <select v-model="reportOrderFilter.orderStatus" style="width:100px">
+            <option value="">全部状态</option>
+            <option value="INIT">待报</option>
+            <option value="REPORTED">已报</option>
+            <option value="PART_FILLED">部成</option>
+            <option value="FILLED">全成</option>
+            <option value="CANCELED">已撤</option>
+            <option value="REJECTED">废单</option>
+          </select>
+          <button @click="searchReportOrders">查询</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>委托编号</th><th>客户代码</th><th>资金账户</th><th>市场</th><th>证券代码</th>
+              <th>方向</th><th>委托价</th><th>委托量</th><th>已成量</th><th>状态</th><th>来源</th><th>时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in reportOrderList" :key="row.order_no">
+              <td><span class="cell-ellipsis mono" :title="row.order_no">{{ row.order_no }}</span></td>
+              <td><span class="cell-ellipsis">{{ row.customer_code || '-' }}</span></td>
+              <td><span class="cell-ellipsis mono">{{ row.fund_account_no || '-' }}</span></td>
+              <td>{{ row.market_code === 'SH' ? '沪A' : row.market_code === 'SZ' ? '深A' : (row.market_code || '-') }}</td>
+              <td class="mono">{{ row.security_code }}</td>
+              <td>{{ row.trade_direction === 'B' ? '买入' : '卖出' }}</td>
+              <td class="mono">{{ row.order_price }}</td>
+              <td>{{ formatInteger(row.order_qty) }}</td>
+              <td>{{ formatInteger(row.filled_qty) }}</td>
+              <td>{{ row.order_status }}</td>
+              <td>{{ row.source_type }}</td>
+              <td style="white-space:nowrap;font-size:12px">{{ formatQuoteTime(row.created_at) }}</td>
+            </tr>
+            <tr v-if="!reportOrderList.length"><td colspan="12" class="empty-row">暂无记录</td></tr>
+          </tbody>
+        </table>
+        <div class="pagination-row" v-if="reportOrderTotal > reportOrderPageSize">
+          <button :disabled="reportOrderPage <= 1" @click="reportOrderPage--; loadReportOrders()" class="secondary">上一页</button>
+          <span style="padding:0 12px">第 {{ reportOrderPage }} 页 / 共 {{ Math.ceil(reportOrderTotal/reportOrderPageSize) }} 页（{{ reportOrderTotal }} 条）</span>
+          <button :disabled="reportOrderPage >= Math.ceil(reportOrderTotal/reportOrderPageSize)" @click="reportOrderPage++; loadReportOrders()" class="secondary">下一页</button>
+        </div>
+      </template>
+
+      <!-- 成交明细 -->
+      <template v-if="reportTab === 'trades'">
+        <div class="filter-row">
+          <input v-model="reportTradeFilter.customerCode" placeholder="客户代码" style="width:120px" />
+          <input v-model="reportTradeFilter.tradeNo" placeholder="成交编号" style="width:160px" />
+          <input v-model="reportTradeFilter.tradeDateFrom" type="date" style="width:140px" />
+          <span style="padding:0 4px;color:#888">至</span>
+          <input v-model="reportTradeFilter.tradeDateTo" type="date" style="width:140px" />
+          <button @click="searchReportTrades">查询</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>成交编号</th><th>关联委托</th><th>客户代码</th><th>资金账户</th><th>证券代码</th>
+              <th>方向</th><th>成交价</th><th>成交量</th><th>成交额</th><th>佣金</th><th>净结算</th><th>时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in reportTradeList" :key="row.trade_no">
+              <td><span class="cell-ellipsis mono" :title="row.trade_no">{{ row.trade_no }}</span></td>
+              <td><span class="cell-ellipsis mono" :title="row.order_no">{{ row.order_no }}</span></td>
+              <td><span class="cell-ellipsis">{{ row.customer_code || '-' }}</span></td>
+              <td><span class="cell-ellipsis mono">{{ row.fund_account_no || '-' }}</span></td>
+              <td class="mono">{{ row.security_code }}</td>
+              <td>{{ row.trade_direction === 'B' ? '买入' : '卖出' }}</td>
+              <td class="mono">{{ row.trade_price }}</td>
+              <td>{{ formatInteger(row.trade_qty) }}</td>
+              <td class="mono">{{ row.trade_amount }}</td>
+              <td class="mono">{{ row.commission_amount }}</td>
+              <td class="mono">{{ row.net_settle_amount }}</td>
+              <td style="white-space:nowrap;font-size:12px">{{ formatQuoteTime(row.trade_time) }}</td>
+            </tr>
+            <tr v-if="!reportTradeList.length"><td colspan="12" class="empty-row">暂无记录</td></tr>
+          </tbody>
+        </table>
+        <div class="pagination-row" v-if="reportTradeTotal > reportTradePageSize">
+          <button :disabled="reportTradePage <= 1" @click="reportTradePage--; loadReportTrades()" class="secondary">上一页</button>
+          <span style="padding:0 12px">第 {{ reportTradePage }} 页 / 共 {{ Math.ceil(reportTradeTotal/reportTradePageSize) }} 页（{{ reportTradeTotal }} 条）</span>
+          <button :disabled="reportTradePage >= Math.ceil(reportTradeTotal/reportTradePageSize)" @click="reportTradePage++; loadReportTrades()" class="secondary">下一页</button>
+        </div>
+      </template>
+
+      <!-- 资产流水 -->
+      <template v-if="reportTab === 'asset-journal'">
+        <div class="filter-row">
+          <input v-model="reportJournalFilter.customerCode" placeholder="客户代码" style="width:120px" />
+          <input v-model="reportJournalFilter.fundAccountNo" placeholder="资金账户" style="width:150px" />
+          <input v-model="reportJournalFilter.journalDateFrom" type="date" style="width:140px" />
+          <span style="padding:0 4px;color:#888">至</span>
+          <input v-model="reportJournalFilter.journalDateTo" type="date" style="width:140px" />
+          <button @click="searchReportJournal">查询</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>流水号</th><th>资金账户</th><th>流水类型</th><th>金额</th>
+              <th>变动前余额</th><th>变动后余额</th><th>关联委托</th><th>关联成交</th><th>时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in reportJournalList" :key="row.journal_no">
+              <td><span class="cell-ellipsis mono" :title="row.journal_no">{{ row.journal_no }}</span></td>
+              <td><span class="cell-ellipsis mono">{{ row.fund_account_no || '-' }}</span></td>
+              <td>{{ row.journal_type }}</td>
+              <td class="mono">{{ row.amount }}</td>
+              <td class="mono">{{ row.balance_before }}</td>
+              <td class="mono">{{ row.balance_after }}</td>
+              <td><span class="cell-ellipsis mono">{{ row.order_no || '-' }}</span></td>
+              <td><span class="cell-ellipsis mono">{{ row.trade_no || '-' }}</span></td>
+              <td style="white-space:nowrap;font-size:12px">{{ formatQuoteTime(row.created_at) }}</td>
+            </tr>
+            <tr v-if="!reportJournalList.length"><td colspan="9" class="empty-row">暂无记录</td></tr>
+          </tbody>
+        </table>
+        <div class="pagination-row" v-if="reportJournalTotal > reportJournalPageSize">
+          <button :disabled="reportJournalPage <= 1" @click="reportJournalPage--; loadReportJournal()" class="secondary">上一页</button>
+          <span style="padding:0 12px">第 {{ reportJournalPage }} 页 / 共 {{ Math.ceil(reportJournalTotal/reportJournalPageSize) }} 页（{{ reportJournalTotal }} 条）</span>
+          <button :disabled="reportJournalPage >= Math.ceil(reportJournalTotal/reportJournalPageSize)" @click="reportJournalPage++; loadReportJournal()" class="secondary">下一页</button>
+        </div>
+      </template>
+
+      <!-- 操作日志 -->
+      <template v-if="reportTab === 'operation-logs'">
+        <div class="filter-row">
+          <input v-model="reportLogFilter.moduleName" placeholder="模块名称" style="width:120px" />
+          <input v-model="reportLogFilter.bizNo" placeholder="业务编号" style="width:150px" />
+          <input v-model="reportLogFilter.occurredFrom" type="date" style="width:140px" />
+          <span style="padding:0 4px;color:#888">至</span>
+          <input v-model="reportLogFilter.occurredTo" type="date" style="width:140px" />
+          <button @click="searchReportLogs">查询</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>操作人</th><th>模块</th><th>业务类型</th><th>业务编号</th><th>操作内容</th><th>IP地址</th><th>时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, idx) in reportLogList" :key="idx">
+              <td>{{ row.operator_name || row.operator_id || '-' }}</td>
+              <td>{{ row.module_name }}</td>
+              <td>{{ row.biz_type }}</td>
+              <td><span class="cell-ellipsis mono" :title="row.biz_no">{{ row.biz_no || '-' }}</span></td>
+              <td><span class="cell-ellipsis" style="max-width:200px" :title="row.operation_content">{{ row.operation_content || '-' }}</span></td>
+              <td>{{ row.operator_ip || '-' }}</td>
+              <td style="white-space:nowrap;font-size:12px">{{ formatQuoteTime(row.occurred_at) }}</td>
+            </tr>
+            <tr v-if="!reportLogList.length"><td colspan="7" class="empty-row">暂无记录</td></tr>
+          </tbody>
+        </table>
+        <div class="pagination-row" v-if="reportLogTotal > reportLogPageSize">
+          <button :disabled="reportLogPage <= 1" @click="reportLogPage--; loadReportLogs()" class="secondary">上一页</button>
+          <span style="padding:0 12px">第 {{ reportLogPage }} 页 / 共 {{ Math.ceil(reportLogTotal/reportLogPageSize) }} 页（{{ reportLogTotal }} 条）</span>
+          <button :disabled="reportLogPage >= Math.ceil(reportLogTotal/reportLogPageSize)" @click="reportLogPage++; loadReportLogs()" class="secondary">下一页</button>
+        </div>
+      </template>
+
+      <!-- 费用明细 -->
+      <template v-if="reportTab === 'fee-details'">
+        <div class="filter-row">
+          <input v-model="reportFeeFilter.customerCode" placeholder="客户代码" style="width:120px" />
+          <input v-model="reportFeeFilter.orderNo" placeholder="委托编号" style="width:160px" />
+          <input v-model="reportFeeFilter.tradeNo" placeholder="成交编号" style="width:160px" />
+          <button @click="searchReportFees">查询</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>成交编号</th><th>委托编号</th><th>费用类型</th><th>费用金额</th><th>成交额</th><th>费率</th><th>时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, idx) in reportFeeList" :key="idx">
+              <td><span class="cell-ellipsis mono" :title="row.trade_no">{{ row.trade_no || '-' }}</span></td>
+              <td><span class="cell-ellipsis mono" :title="row.order_no">{{ row.order_no || '-' }}</span></td>
+              <td>{{ row.fee_type }}</td>
+              <td class="mono">{{ row.fee_amount }}</td>
+              <td class="mono">{{ row.trade_amount }}</td>
+              <td class="mono">{{ row.fee_rate }}</td>
+              <td style="white-space:nowrap;font-size:12px">{{ formatQuoteTime(row.created_at) }}</td>
+            </tr>
+            <tr v-if="!reportFeeList.length"><td colspan="7" class="empty-row">暂无记录</td></tr>
+          </tbody>
+        </table>
+      </template>
+    </div>
+    <div v-if="activeNav === 'report-center' && reportMessage" class="card message">{{ reportMessage }}</div>
+
     <div
       v-if="customerPositionModalOpen"
       class="result-modal-mask"
@@ -946,6 +1304,7 @@
         </div>
       </div>
     </div>
+      </div>
     </div>
   </div>
 </template>
@@ -970,7 +1329,15 @@ import {
   listAuditLogs,
   listOpeningApplications,
   rejectOpeningApplication,
-  submitOperatorTradeOrder
+  submitOperatorTradeOrder,
+  listRiskEvents,
+  handleRiskEvent,
+  getReportSummary,
+  listReportOrders,
+  listReportTrades,
+  listReportAssetJournal,
+  listReportOperationLogs,
+  listReportFeeDetails
 } from "../api";
 
 const router = useRouter();
@@ -983,6 +1350,43 @@ const openingResultMap = ref({});
 const openResultApplyId = ref(null);
 const activeListTab = ref("submitted");
 const activeNav = ref("opening-audit");
+
+// ── 风控中心状态 ──────────────────────────────────────────────────────────
+const riskEvents = ref([]);
+const riskTotal = ref(0);
+const riskPage = ref(1);
+const riskPageSize = ref(20);
+const riskMessage = ref("");
+const riskFilter = ref({ riskLevel: "", eventStatus: "OPEN", customerCode: "", from: "", to: "" });
+const riskEventStats = ref({ open: 0, blocking: 0, warning: 0, handled: 0 });
+
+// ── 报表中心状态 ──────────────────────────────────────────────────────────
+const reportSummary = ref({});
+const reportMessage = ref("");
+const reportTab = ref("orders");
+const reportOrderFilter = ref({ customerCode: "", orderNo: "", orderDateFrom: "", orderDateTo: "", orderStatus: "" });
+const reportOrderList = ref([]);
+const reportOrderTotal = ref(0);
+const reportOrderPage = ref(1);
+const reportOrderPageSize = ref(20);
+const reportTradeFilter = ref({ customerCode: "", tradeNo: "", tradeDateFrom: "", tradeDateTo: "" });
+const reportTradeList = ref([]);
+const reportTradeTotal = ref(0);
+const reportTradePage = ref(1);
+const reportTradePageSize = ref(20);
+const reportJournalFilter = ref({ customerCode: "", fundAccountNo: "", journalDateFrom: "", journalDateTo: "" });
+const reportJournalList = ref([]);
+const reportJournalTotal = ref(0);
+const reportJournalPage = ref(1);
+const reportJournalPageSize = ref(20);
+const reportLogFilter = ref({ moduleName: "", bizNo: "", occurredFrom: "", occurredTo: "" });
+const reportLogList = ref([]);
+const reportLogTotal = ref(0);
+const reportLogPage = ref(1);
+const reportLogPageSize = ref(20);
+const reportFeeFilter = ref({ customerCode: "", orderNo: "", tradeNo: "" });
+const reportFeeList = ref([]);
+
 const marketFilter = ref("");
 const marketKeyword = ref("");
 const marketQuotes = ref([]);
@@ -1021,6 +1425,7 @@ const navItems = [
   { key: "customer-center", label: "客户管理" },
   { key: "order-center", label: "委托管理" },
   { key: "risk-center", label: "风控中心" },
+  { key: "report-center", label: "报表中心" },
   { key: "market-center", label: "行情中心" },
   { key: "system-config", label: "系统设置" }
 ];
@@ -1059,6 +1464,23 @@ const marketQuotesTotalPages = computed(() => {
   if (!s || t <= 0) return 1;
   return Math.max(1, Math.ceil(t / s));
 });
+
+const currentNavLabel = computed(() =>
+  navItems.find((n) => n.key === activeNav.value)?.label ?? "FTS Operator"
+);
+
+function navIcon(key) {
+  const m = {
+    "opening-audit":   '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><polyline points="16 11 18 13 22 9"/>',
+    "customer-center": '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+    "order-center":    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+    "risk-center":     '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+    "report-center":   '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
+    "market-center":   '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+    "system-config":   '<circle cx="12" cy="12" r="3"/><path d="M10.3 4.3c.4-1.8 2.9-1.8 3.4 0a1.72 1.72 0 0 0 2.57 1.07c1.54-.94 3.31.83 2.37 2.37A1.72 1.72 0 0 0 19.7 10c1.76.43 1.76 2.93 0 3.36a1.72 1.72 0 0 0-1.07 2.57c.94 1.54-.83 3.31-2.37 2.37A1.72 1.72 0 0 0 13.7 19.7c-.43 1.76-2.93 1.76-3.36 0a1.72 1.72 0 0 0-2.57-1.07c-1.54.94-3.31-.83-2.37-2.37A1.72 1.72 0 0 0 4.3 14c-1.76-.43-1.76-2.93 0-3.36A1.72 1.72 0 0 0 5.37 8.07c-.94-1.54.83-3.31 2.37-2.37A1.72 1.72 0 0 0 10.3 4.3z"/>',
+  };
+  return m[key] ?? '<circle cx="12" cy="12" r="10"/>';
+}
 
 onMounted(() => {
   if (!localStorage.getItem("op_token")) {
@@ -1371,8 +1793,180 @@ function statusClass(status) {
   return map[status] || "";
 }
 
+// ── 风控中心函数 ──────────────────────────────────────────────────────────
+async function loadRiskEvents() {
+  try {
+    riskMessage.value = "";
+    const f = riskFilter.value;
+    const params = { page: riskPage.value, pageSize: riskPageSize.value };
+    if (f.riskLevel) params.riskLevel = f.riskLevel;
+    if (f.eventStatus) params.riskEventStatus = f.eventStatus;
+    if (f.customerCode) params.customerCode = f.customerCode;
+    if (f.from) params.riskDateFrom = f.from;
+    if (f.to) params.riskDateTo = f.to;
+    const data = await listRiskEvents(params);
+    riskEvents.value = data.list || [];
+    riskTotal.value = Number(data.total ?? 0);
+    computeRiskStats();
+  } catch (e) {
+    riskMessage.value = e?.response?.data?.message || e.message || "查询失败";
+  }
+}
+
+function computeRiskStats() {
+  const list = riskEvents.value;
+  riskEventStats.value = {
+    open:     list.filter(e => e.event_status === "OPEN").length,
+    blocking: list.filter(e => e.is_blocking).length,
+    warning:  list.filter(e => !e.is_blocking).length,
+    handled:  list.filter(e => e.event_status !== "OPEN").length
+  };
+}
+
+function searchRiskEvents() {
+  riskPage.value = 1;
+  loadRiskEvents();
+}
+
+async function doHandleEvent(eventNo, action) {
+  const labelMap = { HANDLED: "确认", IGNORED: "忽略", CLOSED: "关闭" };
+  if (!window.confirm(`确定要「${labelMap[action]}」事件 ${eventNo} 吗？`)) return;
+  try {
+    await handleRiskEvent(eventNo, action);
+    await loadRiskEvents();
+  } catch (e) {
+    riskMessage.value = e?.response?.data?.message || e.message || "操作失败";
+  }
+}
+
+function riskLevelClass(level) {
+  if (level === "HIGH") return "badge-red";
+  if (level === "MEDIUM") return "badge-yellow";
+  return "badge-gray";
+}
+
+function riskStatusClass(status) {
+  if (status === "OPEN") return "badge-red";
+  if (status === "HANDLED") return "badge-green";
+  return "badge-gray";
+}
+
+function formatDatetime(val) {
+  if (!val) return "";
+  const d = new Date(val);
+  if (isNaN(d)) return String(val);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// ── 报表中心函数 ──────────────────────────────────────────────────────────
+async function loadReportSummary() {
+  try {
+    reportSummary.value = await getReportSummary();
+  } catch (e) {
+    reportMessage.value = e?.response?.data?.message || e.message || "加载汇总失败";
+  }
+}
+
+function switchReportTab(tab) {
+  reportTab.value = tab;
+  if (tab === "orders") loadReportOrders();
+  else if (tab === "trades") loadReportTrades();
+  else if (tab === "asset-journal") loadReportJournal();
+  else if (tab === "operation-logs") loadReportLogs();
+  else if (tab === "fee-details") loadReportFees();
+}
+
+async function loadReportOrders() {
+  try {
+    const f = reportOrderFilter.value;
+    const params = { page: reportOrderPage.value, pageSize: reportOrderPageSize.value };
+    if (f.customerCode) params.customerCode = f.customerCode;
+    if (f.orderNo) params.orderNo = f.orderNo;
+    if (f.orderDateFrom) params.orderDateFrom = f.orderDateFrom;
+    if (f.orderDateTo) params.orderDateTo = f.orderDateTo;
+    if (f.orderStatus) params.orderStatus = f.orderStatus;
+    const data = await listReportOrders(params);
+    reportOrderList.value = data.list || [];
+    reportOrderTotal.value = Number(data.total ?? 0);
+  } catch (e) {
+    reportMessage.value = e?.response?.data?.message || e.message || "查询委托失败";
+  }
+}
+
+function searchReportOrders() { reportOrderPage.value = 1; loadReportOrders(); }
+
+async function loadReportTrades() {
+  try {
+    const f = reportTradeFilter.value;
+    const params = { page: reportTradePage.value, pageSize: reportTradePageSize.value };
+    if (f.customerCode) params.customerCode = f.customerCode;
+    if (f.tradeNo) params.tradeNo = f.tradeNo;
+    if (f.tradeDateFrom) params.tradeDateFrom = f.tradeDateFrom;
+    if (f.tradeDateTo) params.tradeDateTo = f.tradeDateTo;
+    const data = await listReportTrades(params);
+    reportTradeList.value = data.list || [];
+    reportTradeTotal.value = Number(data.total ?? 0);
+  } catch (e) {
+    reportMessage.value = e?.response?.data?.message || e.message || "查询成交失败";
+  }
+}
+
+function searchReportTrades() { reportTradePage.value = 1; loadReportTrades(); }
+
+async function loadReportJournal() {
+  try {
+    const f = reportJournalFilter.value;
+    const params = { page: reportJournalPage.value, pageSize: reportJournalPageSize.value };
+    if (f.customerCode) params.customerCode = f.customerCode;
+    if (f.fundAccountNo) params.fundAccountNo = f.fundAccountNo;
+    if (f.journalDateFrom) params.journalDateFrom = f.journalDateFrom;
+    if (f.journalDateTo) params.journalDateTo = f.journalDateTo;
+    const data = await listReportAssetJournal(params);
+    reportJournalList.value = data.list || [];
+    reportJournalTotal.value = Number(data.total ?? 0);
+  } catch (e) {
+    reportMessage.value = e?.response?.data?.message || e.message || "查询资产流水失败";
+  }
+}
+
+function searchReportJournal() { reportJournalPage.value = 1; loadReportJournal(); }
+
+async function loadReportLogs() {
+  try {
+    const f = reportLogFilter.value;
+    const params = { page: reportLogPage.value, pageSize: reportLogPageSize.value };
+    if (f.moduleName) params.moduleName = f.moduleName;
+    if (f.bizNo) params.bizNo = f.bizNo;
+    if (f.occurredFrom) params.occurredFrom = f.occurredFrom;
+    if (f.occurredTo) params.occurredTo = f.occurredTo;
+    const data = await listReportOperationLogs(params);
+    reportLogList.value = data.list || [];
+    reportLogTotal.value = Number(data.total ?? 0);
+  } catch (e) {
+    reportMessage.value = e?.response?.data?.message || e.message || "查询操作日志失败";
+  }
+}
+
+function searchReportLogs() { reportLogPage.value = 1; loadReportLogs(); }
+
+async function loadReportFees() {
+  try {
+    const f = reportFeeFilter.value;
+    const params = {};
+    if (f.customerCode) params.customerCode = f.customerCode;
+    if (f.orderNo) params.orderNo = f.orderNo;
+    if (f.tradeNo) params.tradeNo = f.tradeNo;
+    reportFeeList.value = await listReportFeeDetails(params);
+  } catch (e) {
+    reportMessage.value = e?.response?.data?.message || e.message || "查询费用明细失败";
+  }
+}
+
+function searchReportFees() { loadReportFees(); }
+
 function onNavClick(item) {
-  if (item.key === "opening-audit" || item.key === "market-center" || item.key === "order-center" || item.key === "customer-center") {
+  if (["opening-audit","market-center","order-center","customer-center","risk-center","report-center"].includes(item.key)) {
     activeNav.value = item.key;
     if (item.key === "market-center") {
       loadMarketList(true);
@@ -1381,6 +1975,14 @@ function onNavClick(item) {
     } else if (item.key === "customer-center") {
       customerViewMode.value = "list";
       loadCustomers();
+    } else if (item.key === "risk-center") {
+      riskPage.value = 1;
+      loadRiskEvents();
+    } else if (item.key === "report-center") {
+      reportMessage.value = "";
+      reportTab.value = "orders";
+      loadReportSummary();
+      loadReportOrders();
     }
     return;
   }

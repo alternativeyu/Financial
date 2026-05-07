@@ -143,3 +143,45 @@ export function listCustomerOrders(customerId) {
 export function listCustomerTrades(customerId) {
   return http.get(`/opening/customers/${customerId}/trades`).then((r) => r.data);
 }
+
+/** 柜台：查询风控事件列表，GET /api/operator/report/risk-events */
+export function listRiskEvents(params) {
+  return http.get("/report/risk-events", { params }).then((r) => r.data?.data ?? {});
+}
+
+/** 柜台：处理风控事件（HANDLED / IGNORED / CLOSED），POST /api/operator/risk-events/{eventNo}/handle */
+export function handleRiskEvent(eventNo, action) {
+  return http.post(`/risk-events/${eventNo}/handle`, { action }).then((r) => r.data?.data ?? {});
+}
+
+// ── 报表中心 ──────────────────────────────────────────────────────────────
+
+/** 报表看板汇总 */
+export function getReportSummary() {
+  return http.get("/report/summary").then((r) => r.data?.data ?? {});
+}
+
+/** 委托明细报表 */
+export function listReportOrders(params) {
+  return http.get("/report/orders", { params }).then((r) => r.data?.data ?? {});
+}
+
+/** 成交明细报表 */
+export function listReportTrades(params) {
+  return http.get("/report/trades", { params }).then((r) => r.data?.data ?? {});
+}
+
+/** 资产流水报表 */
+export function listReportAssetJournal(params) {
+  return http.get("/report/asset-journal", { params }).then((r) => r.data?.data ?? {});
+}
+
+/** 操作日志报表 */
+export function listReportOperationLogs(params) {
+  return http.get("/report/operation-logs", { params }).then((r) => r.data?.data ?? {});
+}
+
+/** 费用明细报表 */
+export function listReportFeeDetails(params) {
+  return http.get("/report/fee-details", { params }).then((r) => r.data?.data ?? []);
+}

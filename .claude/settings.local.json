@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tasklist)",
+      "Bash(findstr 8040)",
+      "PowerShell(Stop-Process *)",
+      "Bash(Get-ChildItem -Path \"F:\\\\Users\\\\lenovo\\\\Desktop\\\\Financial\" -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(python *)",
+      "Bash(mvn compile *)",
+      "Bash(npx vite *)",
+      "Bash(git -C \"F:\\\\Users\\\\lenovo\\\\Desktop\\\\Financial\" status --short)"
+    ]
+  }
+}

@@ -887,9 +887,12 @@ public class UnifiedBusinessQueryService {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 """
                 SELECT e.event_no, e.event_type, e.risk_level, e.is_blocking, e.hit_message, e.event_status,
-                       e.handled_at, e.created_at, r.rule_code, r.rule_name
+                       e.handled_at, e.created_at, e.customer_id, e.order_id,
+                       r.rule_code, r.rule_name,
+                       c.customer_code, c.customer_name
                 FROM risk_event e
                 JOIN risk_rule r ON r.id = e.rule_id
+                LEFT JOIN cust_customer c ON c.id = e.customer_id
                 """
                         + where
                         + " ORDER BY e.created_at DESC LIMIT ? OFFSET ? ",
@@ -1058,4 +1061,43 @@ public class UnifiedBusinessQueryService {
         }
         return Long.parseLong(String.valueOf(value));
     }
+
+    /** 报表看板汇总数据（全局统计，不依赖客户/账户过滤）。 */
+    public Map<String, Object> getReportSummary(String token) {
+        requireOperatorId(token);
+
+        long totalOrders = nzLong(jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM trd_order", Long.class));
+        long todayOrders = nzLong(jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM trd_order WHERE DATE(created_at) = CURDATE()", Long.class));
+        long canceledOrders = nzLong(jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM trd_order WHERE order_status IN ('CANCELED','PART_CANCELED')", Long.class));
+        long totalTrades = nzLong(jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM trd_trade", Long.class));
+        long todayTrades = nzLong(jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM trd_trade WHERE DATE(trade_time) = CURDATE()", Long.class));
+        BigDecimal totalTradeAmount = nzDecimal(jdbcTemplate.queryForObject(
+                "SELECT COALESCE(SUM(trade_amount),0) FROM trd_trade", BigDecimal.class));
+        BigDecimal todayTradeAmount = nzDecimal(jdbcTemplate.queryForObject(
+                "SELECT COALESCE(SUM(trade_amount),0) FROM trd_trade WHERE DATE(trade_time) = CURDATE()", BigDecimal.class));
+        long openRiskEvents = nzLong(jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM risk_event WHERE event_status = 'OPEN'", Long.class));
+        long activeCustomers = nzLong(jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM cust_customer WHERE customer_status = 'NORMAL'", Long.class));
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("totalOrders", totalOrders);
+        data.put("todayOrders", todayOrders);
+        data.put("canceledOrders", canceledOrders);
+        data.put("totalTrades", totalTrades);
+        data.put("todayTrades", todayTrades);
+        data.put("totalTradeAmount", totalTradeAmount);
+        data.put("todayTradeAmount", todayTradeAmount);
+        data.put("openRiskEvents", openRiskEvents);
+        data.put("activeCustomers", activeCustomers);
+        return data;
+    }
+
+    private static long nzLong(Long v) { return v == null ? 0L : v; }
+    private static BigDecimal nzDecimal(BigDecimal v) { return v == null ? BigDecimal.ZERO : v; }
 }

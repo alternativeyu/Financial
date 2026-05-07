@@ -8,7 +8,7 @@ spring:
   datasource:
     url: jdbc:mysql://127.0.0.1:3306/financial_trading?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: root
-    password: lyb050527
+    password: 20050226
     driver-class-name: com.mysql.cj.jdbc.Driver
 
 # 与 backend 的 financial.mock-exchange.shared-secret 对齐；空表示不校验（仅本机联调）

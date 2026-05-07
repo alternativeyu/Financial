@@ -39,11 +39,11 @@ def next_id(seed: int, index: int) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sync A-share market data by Tushare.")
-    parser.add_argument("--token", default=os.getenv("TUSHARE_TOKEN", ""))
+    parser.add_argument("--token", default=os.getenv("TUSHARE_TOKEN", "1746fed74d83dd4a0c312ec489b84093b3ba12ff1852bb960fb5460d"))
     parser.add_argument("--host", default=os.getenv("DB_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("DB_PORT", "3306")))
     parser.add_argument("--user", default=os.getenv("DB_USER", "root"))
-    parser.add_argument("--password", default=os.getenv("DB_PASSWORD", ""))
+    parser.add_argument("--password", default=os.getenv("DB_PASSWORD", "20050226"))
     parser.add_argument("--database", default=os.getenv("DB_NAME", "financial_trading"))
     parser.add_argument("--limit", type=int, default=300, help="Number of symbols to sync.")
     parser.add_argument(

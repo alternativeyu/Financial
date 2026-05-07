@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.financial.operator.infra.integration.MockExchangeClient;
 import com.financial.operator.infra.messaging.TradeDomainEventPublisher;
 import com.financial.operator.infra.messaging.TradeSettledPayload;
+import com.financial.operator.service.RiskRuleEngineService;
 import com.financial.operator.service.TradingFeeRuleService;
 import com.financial.operator.service.TradingFeeRuleService.CommissionRule;
 import com.financial.operator.service.UnifiedBusinessQueryService;
@@ -50,6 +51,7 @@ public class TradeController {
     private final TradingFeeRuleService tradingFeeRuleService;
     private final TransactionTemplate transactionTemplate;
     private final MockExchangeClient mockExchangeClient;
+    private final RiskRuleEngineService riskEngine;
 
     public TradeController(
             JdbcTemplate jdbcTemplate,
@@ -57,7 +59,8 @@ public class TradeController {
             UnifiedBusinessQueryService businessQueryService,
             TradingFeeRuleService tradingFeeRuleService,
             TransactionTemplate transactionTemplate,
-            MockExchangeClient mockExchangeClient
+            MockExchangeClient mockExchangeClient,
+            RiskRuleEngineService riskEngine
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.tradeDomainEventPublisher = tradeDomainEventPublisher;
@@ -65,6 +68,7 @@ public class TradeController {
         this.tradingFeeRuleService = tradingFeeRuleService;
         this.transactionTemplate = transactionTemplate;
         this.mockExchangeClient = mockExchangeClient;
+        this.riskEngine = riskEngine;
     }
 
     @GetMapping("/operator/trade/orders")
@@ -519,6 +523,21 @@ public class TradeController {
             return data;
         }
 
+        // 风控引擎：PRE_ORDER 阶段检查，阻断规则命中时写 risk_event 并拒绝下单
+        RiskRuleEngineService.RiskContext riskCtx = buildRiskContextForOrder(
+                customerId, fundAccountNo, marketCode, securityCode, direction, price, quantity);
+        if (riskCtx != null) {
+            RiskRuleEngineService.RiskCheckResult riskResult = riskEngine.check(riskCtx, null);
+            if (riskResult.blocked()) {
+                String msg = riskResult.violations().stream()
+                        .filter(RiskRuleEngineService.RiskViolation::blocking)
+                        .findFirst()
+                        .map(RiskRuleEngineService.RiskViolation::hitMessage)
+                        .orElse("风控检查不通过");
+                throw new IllegalArgumentException(msg);
+            }
+        }
+
         SubmitOrderPhase1 phase1 = Objects.requireNonNull(
                 transactionTemplate.execute(status -> executeOrderPersistPhase(
                         customerId, fundAccountNo, marketCode, securityCode, direction, price, quantity,
@@ -714,6 +733,10 @@ public class TradeController {
                 cancelId
         );
         jdbcTemplate.update("UPDATE rpt_order_dispatch SET dispatch_status = 'ACCEPTED' WHERE id = ?", dispatchId);
+
+        // R010：撤单成功后检查当日高频撤单（写预警事件，不阻断）
+        long cancelCustomerId = toLong(order.get("customer_id"));
+        riskEngine.checkCancelFrequency(cancelCustomerId, toLong(order.get("id")));
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("cancelId", cancelId);
@@ -1354,6 +1377,82 @@ public class TradeController {
         if (value == null) return 0L;
         if (value instanceof Number n) return n.longValue();
         return Long.parseLong(String.valueOf(value));
+    }
+
+    /**
+     * 为下单风控引擎构建上下文：预查询客户/账户/证券/行情/持仓数据。
+     * 若关键数据缺失（账户不存在等），返回 null——此时跳过风控引擎，
+     * 后续事务内部的校验逻辑会抛出具体错误。
+     */
+    private RiskRuleEngineService.RiskContext buildRiskContextForOrder(
+            Long customerId, String fundAccountNo, String marketCode, String securityCode,
+            String direction, BigDecimal price, Long quantity) {
+        try {
+            List<String> custRows = jdbcTemplate.queryForList(
+                    "SELECT customer_status FROM cust_customer WHERE id = ? LIMIT 1",
+                    String.class, customerId);
+            String customerStatus = custRows.isEmpty() ? "NORMAL" : custRows.get(0);
+
+            Map<String, Object> fund = queryOne(
+                    "SELECT id, status, available_balance FROM acct_fund_account WHERE customer_id = ? AND fund_account_no = ? LIMIT 1",
+                    customerId, fundAccountNo);
+            if (fund == null) return null;
+            Long fundAccountId = toLong(fund.get("id"));
+
+            Map<String, Object> shareholder = queryOne(
+                    "SELECT id, account_status FROM acct_shareholder_account WHERE customer_id = ? AND market_code = ? LIMIT 1",
+                    customerId, marketCode);
+            Long shareholderAccountId = shareholder == null ? null : toLong(shareholder.get("id"));
+            String shareholderStatus = shareholder == null ? null : asString(shareholder.get("account_status"));
+
+            Map<String, Object> security = queryOne(
+                    "SELECT id, listed_status, lot_size, security_type FROM md_security WHERE market_code = ? AND security_code = ? LIMIT 1",
+                    marketCode, securityCode);
+            if (security == null) return null;
+            Long securityId = toLong(security.get("id"));
+            String securityType = emptyToNull(asString(security.get("security_type")));
+            if (isBlank(securityType)) securityType = "COMMON";
+
+            Map<String, Object> quote = queryOne(
+                    "SELECT upper_limit_price, lower_limit_price FROM md_market_quote WHERE security_id = ? ORDER BY quote_time DESC LIMIT 1",
+                    securityId);
+            BigDecimal upper = quote == null ? null : asDecimal(quote.get("upper_limit_price"));
+            BigDecimal lower = quote == null ? null : asDecimal(quote.get("lower_limit_price"));
+
+            List<String> acctClsRows = jdbcTemplate.queryForList(
+                    "SELECT acct_cls_code FROM cust_customer WHERE id = ? LIMIT 1", String.class, customerId);
+            String acctClsCode = acctClsRows.isEmpty() || isBlank(acctClsRows.get(0)) ? "NORMAL" : acctClsRows.get(0).trim();
+
+            long availableQty = 0L;
+            if ("S".equalsIgnoreCase(direction)) {
+                Map<String, Object> pos = queryOne(
+                        "SELECT available_qty FROM acct_position WHERE fund_account_id = ? AND security_id = ? LIMIT 1",
+                        fundAccountId, securityId);
+                if (pos != null) availableQty = toLong(pos.get("available_qty"));
+            }
+
+            BigDecimal estimatedTotalCost = BigDecimal.ZERO;
+            if ("B".equalsIgnoreCase(direction)) {
+                BigDecimal orderAmt = price.multiply(BigDecimal.valueOf(quantity)).setScale(4, RoundingMode.HALF_UP);
+                CommissionRule commRule = tradingFeeRuleService.loadCommission(acctClsCode, marketCode, securityType);
+                BigDecimal estComm = tradingFeeRuleService.commissionOnTurnover(orderAmt, commRule);
+                BigDecimal estStamp = tradingFeeRuleService.buyStampOnTurnover(orderAmt, marketCode, securityType);
+                estimatedTotalCost = orderAmt.add(estComm).add(estStamp).setScale(4, RoundingMode.HALF_UP);
+            }
+
+            return new RiskRuleEngineService.RiskContext(
+                    customerId, customerStatus,
+                    fundAccountId, asString(fund.get("status")),
+                    shareholderAccountId, shareholderStatus,
+                    securityId, asString(security.get("listed_status")),
+                    ((Number) security.get("lot_size")).intValue(),
+                    direction, price, quantity,
+                    upper, lower,
+                    asDecimal(fund.get("available_balance")), availableQty, estimatedTotalCost
+            );
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private long nextId() {
